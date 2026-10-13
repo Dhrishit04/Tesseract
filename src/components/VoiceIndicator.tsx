@@ -26,6 +26,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
 
   // Load initial voice status
   const loadVoiceStatus = async () => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
     try {
       const status = await getVoiceStatus();
       setVoiceEnabled(status.enabled);
@@ -54,6 +55,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
   };
 
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
     loadVoiceStatus();
 
     // Listen for voice status changes from sidecar
@@ -116,7 +118,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
     switch (voiceState) {
       case "listening":
         return {
-          icon: "🎤",
+          icon: "voice",
           color: "text-tesseract-accent",
           bgColor: "bg-tesseract-accent/10",
           pulse: true,
@@ -124,7 +126,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
         };
       case "recording":
         return {
-          icon: "🔴",
+          icon: "recording",
           color: "text-red-400",
           bgColor: "bg-red-400/10",
           pulse: true,
@@ -132,7 +134,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
         };
       case "speaking":
         return {
-          icon: "🔊",
+          icon: "speaking",
           color: "text-green-400",
           bgColor: "bg-green-400/10",
           pulse: true,
@@ -140,7 +142,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
         };
       case "processing":
         return {
-          icon: "⚙️",
+          icon: "working",
           color: "text-yellow-400",
           bgColor: "bg-yellow-400/10",
           pulse: true,
@@ -148,7 +150,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
         };
       default:
         return {
-          icon: voiceEnabled ? "🎤" : "🎤",
+          icon: "voice",
           color: voiceEnabled ? "text-tesseract-text-muted" : "text-tesseract-text-muted/50",
           bgColor: "bg-tesseract-surface",
           pulse: false,
@@ -167,7 +169,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
         className={`p-2 rounded-lg transition-all ${config.bgColor} ${config.color} hover:bg-tesseract-border`}
         title="Enable voice in Settings to use this feature"
       >
-        <span className="text-lg">{config.icon}</span>
+        <span className="text-[10px] uppercase tracking-wide">{config.icon}</span>
       </button>
     );
   }
@@ -187,7 +189,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
         `}
         title={config.tooltip}
       >
-        <span className="text-lg">{config.icon}</span>
+        <span className="text-[10px] uppercase tracking-wide">{config.icon}</span>
       </button>
 
       {/* STT recording button (shown when wake word active or manually triggered) */}
@@ -197,7 +199,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
           className="p-2 rounded-lg bg-tesseract-surface border border-tesseract-border text-tesseract-text-muted hover:bg-tesseract-border hover:text-tesseract-text transition-colors"
           title="Start recording manually"
         >
-          <span className="text-lg">🎙️</span>
+          <span className="text-[10px] uppercase tracking-wide">record</span>
         </button>
       )}
 
@@ -208,7 +210,7 @@ export function VoiceIndicator({ onTranscription }: VoiceIndicatorProps) {
           className="p-2 rounded-lg bg-tesseract-surface border border-tesseract-border text-tesseract-text-muted hover:bg-tesseract-border hover:text-tesseract-text transition-colors"
           title="Stop speaking"
         >
-          <span className="text-lg">⏹️</span>
+          <span className="text-[10px] uppercase tracking-wide">stop</span>
         </button>
       )}
 

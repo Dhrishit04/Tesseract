@@ -11,6 +11,7 @@ sidecar/build/
 sidecar/dist/
 sidecar/*.spec
 sidecar/tesseract_sidecar.egg-info/
+Sample theme details
 *.log
 __pycache__
 ~/.tesseract/

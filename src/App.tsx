@@ -1,190 +1,166 @@
-import { useState, useEffect } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useChat } from "./hooks/useChat";
 import { ModelPicker } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { VoiceIndicator } from "./components/VoiceIndicator";
 
+type View = "home" | "privacy" | "terms" | "settings";
+
+function ArrowUpRight() {
+  return <span aria-hidden="true" className="arrow">↗</span>;
+}
+
 function App() {
-  const {
-    messages,
-    isLoading,
-    currentModel,
-    setCurrentModel,
-    sendMessage,
-    clearMessages,
-  } = useChat();
-
+  const { messages, isLoading, currentModel, setCurrentModel, sendMessage, clearMessages } = useChat();
+  const [view, setView] = useState<View>("home");
   const [input, setInput] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activeView, setActiveView] = useState<"chat" | "settings">("chat");
+  const [email, setEmail] = useState("");
+  const [formMessage, setFormMessage] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Listen for open-settings event from tray menu
   useEffect(() => {
-    let unlisten: () => void;
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let unlisten: (() => void) | undefined;
     listen("open-settings", () => {
-      setActiveView("settings");
+      setView("settings");
       setSidebarOpen(true);
     }).then((fn) => {
       unlisten = fn;
     });
-    return () => {
-      if (unlisten) unlisten();
-    };
+    return () => unlisten?.();
   }, []);
 
-  const handleSend = () => {
+  const submitPrompt = (event?: FormEvent) => {
+    event?.preventDefault();
     if (!input.trim() || isLoading) return;
     sendMessage(input.trim());
     setInput("");
   };
 
-  const handleNavClick = (view: "chat" | "settings") => {
-    setActiveView(view);
-    setSidebarOpen(true);
+  const submitEmail = (event: FormEvent) => {
+    event.preventDefault();
+    if (!email.trim() || !email.includes("@")) {
+      setFormMessage("Enter a valid email address.");
+      return;
+    }
+    setFormMessage("Thanks. We’ll be in touch when Tesseract is ready.");
+    setEmail("");
   };
 
-  return (
-    <div className="flex h-screen bg-tesseract-dark">
-      {/* Sidebar */}
-      <aside
-        className={`${
-          sidebarOpen ? "w-64" : "w-0"
-        } transition-all duration-200 bg-tesseract-darker border-r border-tesseract-border overflow-hidden flex flex-col`}
-      >
-        <div className="p-4">
-          <h1 className="text-lg font-bold text-tesseract-accent">Tesseract</h1>
-          <nav className="mt-6 space-y-2">
-            <button
-              onClick={() => handleNavClick("chat")}
-              className={`w-full text-left px-3 py-2 rounded transition-colors ${
-                activeView === "chat"
-                  ? "bg-tesseract-surface text-tesseract-text"
-                  : "text-tesseract-text-muted hover:bg-tesseract-surface"
-              }`}
-            >
-              💬 Chat
-            </button>
-            <button
-              onClick={() => handleNavClick("settings")}
-              className={`w-full text-left px-3 py-2 rounded transition-colors ${
-                activeView === "settings"
-                  ? "bg-tesseract-surface text-tesseract-text"
-                  : "text-tesseract-text-muted hover:bg-tesseract-surface"
-              }`}
-            >
-              ⚙️ Settings
-            </button>
-          </nav>
-        </div>
-        <div className="mt-auto p-4 border-t border-tesseract-border">
-          <button
-            onClick={clearMessages}
-            className="w-full text-left px-3 py-2 rounded text-tesseract-text-muted hover:bg-tesseract-surface transition-colors text-sm"
-          >
-            🗑️ Clear chat
-          </button>
-        </div>
-      </aside>
+  const goTo = (nextView: View, anchor?: string) => {
+    setView(nextView);
+    setSidebarOpen(false);
+    if (anchor) window.setTimeout(() => document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth" }), 0);
+  };
 
-      {/* Main Area */}
-      <main className="flex-1 flex flex-col">
-        {/* Header */}
-        <header className="h-12 border-b border-tesseract-border flex items-center px-4 gap-3">
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="text-tesseract-text-muted hover:text-tesseract-text"
-          >
-            ☰
-          </button>
-          <span className="text-sm text-tesseract-text-muted flex-1">Tesseract AI</span>
-          {activeView === "chat" && (
-            <>
-              <ModelPicker currentModel={currentModel} onModelChange={setCurrentModel} />
-              <VoiceIndicator
-                onTranscription={(text) => {
-                  // Send transcribed text as a chat message
-                  if (text.trim()) {
-                    sendMessage(text.trim());
-                  }
-                }}
-              />
-            </>
-          )}
+  if (view === "settings") {
+    return (
+      <div className="app-shell">
+        <header className="app-header">
+          <button className="brand" onClick={() => goTo("home")} aria-label="Back to Tesseract home">TESSERACT</button>
+          <button className="text-button" onClick={() => goTo("home")}>Back to home</button>
         </header>
+        <main className="settings-wrap"><SettingsPanel /></main>
+      </div>
+    );
+  }
 
-        {/* Content */}
-        <div className="flex-1 overflow-hidden">
-          {activeView === "chat" && (
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.length === 0 && (
-                <div className="flex items-center justify-center h-full text-tesseract-text-muted">
-                  <div className="text-center">
-                    <h2 className="text-2xl font-bold text-tesseract-accent mb-2">Tesseract</h2>
-                    <p>How can I help you today?</p>
-                    <div className="mt-4 text-xs text-tesseract-text-muted/50">
-                      Model: {currentModel}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${
-                    msg.role === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-[70%] rounded-lg px-4 py-2 ${
-                      msg.role === "user"
-                        ? "bg-tesseract-accent text-white"
-                        : "bg-tesseract-surface text-tesseract-text"
-                    }`}
-                  >
-                    <p className="text-sm whitespace-pre-wrap">
-                      {msg.content || (msg.role === "assistant" ? "..." : "")}
-                    </p>
-                  </div>
-                </div>
-              ))}
-              {isLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-tesseract-surface rounded-lg px-4 py-2">
-                    <span className="animate-pulse text-tesseract-text-muted">▌</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+  if (view === "privacy" || view === "terms") {
+    const isPrivacy = view === "privacy";
+    return (
+      <div className="legal-page">
+        <header className="site-header">
+          <button className="brand" onClick={() => goTo("home")}>TESSERACT</button>
+          <button className="text-button" onClick={() => goTo("home")}>Back to home</button>
+        </header>
+        <main className="legal-content">
+          <p className="eyebrow">DRAFT FOR REVIEW · 22 SEPTEMBER 2026</p>
+          <h1>{isPrivacy ? "Privacy Policy" : "Terms of Service"}</h1>
+          <p className="legal-lede">This {isPrivacy ? "privacy policy" : "terms page"} is a draft for review. Tesseract is an early product and these details should be completed before public launch.</p>
+          <section>
+            <h2>{isPrivacy ? "What we currently collect" : "Using Tesseract"}</h2>
+            <p>{isPrivacy
+              ? "The desktop app sends prompts, selected model details, and conversation history to the configured AI provider so it can respond. We do not currently operate a separate account system or publish a retention schedule."
+              : "Tesseract is provided as an experimental desktop assistant. You are responsible for the prompts and files you choose to send to an AI provider, and for checking generated output before relying on it."}</p>
+          </section>
+          <section>
+            <h2>{isPrivacy ? "Third-party providers" : "Availability and changes"}</h2>
+            <p>{isPrivacy
+              ? "Your configured model provider may process data under its own policies. Review that provider’s terms before using sensitive information. This draft will name the active providers and contact address before launch."
+              : "Features may change while Tesseract is in development. We will publish an updated version of this page with support, warranty, and contact details before release."}</p>
+          </section>
+          <p className="legal-note">Draft status: review with the product owner and legal counsel before publishing.</p>
+        </main>
+      </div>
+    );
+  }
 
-          {activeView === "settings" && <SettingsPanel />}
-        </div>
+  return (
+    <div className="site">
+      <header className="site-header">
+        <button className="brand" onClick={() => goTo("home")} aria-label="Tesseract home">TESSERACT</button>
+        <nav className={sidebarOpen ? "nav-open" : ""} aria-label="Main navigation">
+          <button onClick={() => goTo("home", "product")}>Product</button>
+          <button onClick={() => goTo("home", "principles")}>Principles</button>
+          <button onClick={() => goTo("home", "contact")}>Stay in the loop</button>
+          <button className="nav-cta" onClick={() => goTo("home", "try")}>Try the demo <ArrowUpRight /></button>
+        </nav>
+        <button className="menu-button" onClick={() => setSidebarOpen(!sidebarOpen)} aria-expanded={sidebarOpen} aria-label="Toggle navigation">
+          <span /><span />
+        </button>
+      </header>
 
-        {/* Input (only shown in chat view) */}
-        {activeView === "chat" && (
-          <div className="border-t border-tesseract-border p-4">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-                placeholder={isLoading ? "Waiting for response..." : "Type a message..."}
-                disabled={isLoading}
-                className="flex-1 bg-tesseract-surface border border-tesseract-border rounded-lg px-4 py-2 text-tesseract-text placeholder-tesseract-text-muted focus:outline-none focus:border-tesseract-accent disabled:opacity-50"
-              />
-              <button
-                onClick={handleSend}
-                disabled={isLoading}
-                className="bg-tesseract-accent hover:bg-tesseract-accent-hover text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
-              >
-                Send
-              </button>
+      <main>
+        <section className="hero">
+          <div className="hero-copy">
+            <p className="eyebrow">A focused AI workspace for your desktop</p>
+            <h1>Make room for<br /><em>better thinking.</em></h1>
+            <p className="hero-lede">Tesseract brings capable AI, voice, and the tools you use every day into one quiet place.</p>
+            <button className="primary-button" onClick={() => goTo("home", "try")}>Open the workspace <ArrowUpRight /></button>
+          </div>
+          <div className="hero-mark" aria-hidden="true">
+            <div className="mark-ring ring-one" /><div className="mark-ring ring-two" /><div className="mark-core" />
+            <span>01 / 03</span>
+          </div>
+          <div className="hero-foot"><span>Built for considered work</span><span>Scroll to explore ↓</span></div>
+        </section>
+
+        <section className="intro-section" id="product">
+          <div className="section-label">01 / The workspace</div>
+          <div className="intro-grid">
+            <h2>One clear surface<br />for complex work.</h2>
+            <div><p>Good tools stay out of the way. Tesseract keeps your conversation, chosen model, and voice controls close at hand, without turning your desktop into a control room.</p><p>Ask a question, shape an idea, or pick up exactly where you left off.</p></div>
+          </div>
+        </section>
+
+        <section className="product-section" id="try">
+          <div className="product-heading"><p className="eyebrow">Live workspace</p><h2>Try it with a real prompt.</h2><p>Responses use your configured local connection. Nothing here is simulated.</p></div>
+          <div className="workspace-window">
+            <div className="workspace-topbar"><div className="window-dots"><i /><i /><i /></div><span>Tesseract / workspace</span><span className="status"><b /> Ready</span></div>
+            <div className="workspace-body">
+              <aside className="workspace-side"><div className="side-brand">TESSERACT</div><button className="side-active"><span>New conversation</span></button><button onClick={() => goTo("settings")}><span>Settings</span></button><button onClick={clearMessages}><span>Clear chat</span></button><small>LOCAL WORKSPACE<br />CONNECTED</small></aside>
+              <div className="chat-panel">
+                <div className="chat-toolbar"><span>Conversation</span><div className="toolbar-actions"><ModelPicker currentModel={currentModel} onModelChange={setCurrentModel} /><VoiceIndicator onTranscription={(text) => text.trim() && sendMessage(text.trim())} /></div></div>
+                <div className="messages">
+                  {messages.length === 0 ? <div className="empty-chat"><span className="empty-glyph">T</span><h3>What are you working on?</h3><p>Ask Tesseract to clarify, draft, or explore an idea.</p><div className="prompt-chips"><button onClick={() => setInput("Help me think through a difficult decision")}>Think through a decision</button><button onClick={() => setInput("Turn these notes into a clear outline")}>Shape some notes</button></div></div> : messages.map((message) => <div className={`message ${message.role}`} key={message.id}><span className="message-label">{message.role === "user" ? "YOU" : "TESSERACT"}</span><p>{message.content || "Thinking..."}</p></div>)}
+                  {isLoading && messages.length > 0 && <div className="typing"><i /><i /><i /></div>}
+                </div>
+                <form className="composer" onSubmit={submitPrompt}><input aria-label="Message Tesseract" value={input} onChange={(event) => setInput(event.target.value)} placeholder="Ask anything..." disabled={isLoading} /><button type="submit" disabled={isLoading || !input.trim()} aria-label="Send message">↑</button></form>
+              </div>
             </div>
           </div>
-        )}
+        </section>
+
+        <section className="principles-section" id="principles">
+          <div className="section-label">02 / The point of view</div>
+          <div className="principles-intro"><h2>Less interface.<br /><em>More intention.</em></h2><p>Tesseract is designed for the moments when you need to stay with a thought. It is responsive when you ask, quiet when you do not, and flexible enough to fit the way you already work.</p></div>
+          <div className="principle-list"><div><span>01</span><h3>Clarity over clutter</h3><p>Every control earns its place. The conversation stays central.</p></div><div><span>02</span><h3>Your choice of intelligence</h3><p>Switch between connected models without rebuilding your workflow.</p></div><div><span>03</span><h3>Voice when it helps</h3><p>Move from thought to words and back again with hands-free controls.</p></div></div>
+        </section>
+
+        <section className="contact-section" id="contact"><div><p className="eyebrow">Early access</p><h2>Keep a window<br /><em>open.</em></h2><p>We are shaping Tesseract carefully. Leave your email for product notes and early access updates.</p></div><form className="email-form" onSubmit={submitEmail}><label htmlFor="email">Your email address</label><div><input id="email" type="email" value={email} onChange={(event) => { setEmail(event.target.value); setFormMessage(""); }} placeholder="you@example.com" required /><button type="submit">Sign up <ArrowUpRight /></button></div><small aria-live="polite">{formMessage}</small></form></section>
       </main>
+      <footer className="site-footer"><span>© 2026 Tesseract</span><span>Made for the space between questions.</span><div><button onClick={() => goTo("terms")}>Terms</button><button onClick={() => goTo("privacy")}>Privacy</button></div></footer>
     </div>
   );
 }
