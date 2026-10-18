@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 
+from llm.chat_loop import ChatLoopError, complete_chat, stream_chat
 from llm.openrouter import OpenRouterClient, DEFAULT_MODEL
 from skills.registry import get_registry
 from skills.skill_base import SkillResult
@@ -116,174 +117,50 @@ async def health():
     return HealthResponse(status="ok", version="0.1.0")
 
 
+NO_API_KEY_MESSAGE = "Add your OpenRouter API key in Settings to start chatting."
+
+
+def _sse(event: dict | str) -> str:
+    payload = event if isinstance(event, str) else json.dumps(event, default=str)
+    return f"data: {payload}\n\n"
+
+
+def _conversation(request: MessageRequest) -> list[dict]:
+    return [*request.history, {"role": "user", "content": request.message}]
+
+
 @app.post("/chat/stream")
 async def chat_stream(request: MessageRequest):
     """Stream a chat response from OpenRouter with skill tool calling."""
     client = get_client()
-    if not client.api_key:
-        # No API key configured — echo mode
-        async def echo():
-            yield f"data: {json.dumps({'content': 'Please configure your OpenRouter API key in Settings first.'})}\n\n"
-            yield "data: [DONE]\n\n"
-        return StreamingResponse(echo(), media_type="text/event-stream")
-
-    # Get skill tool definitions
     registry = get_skill_registry()
-    tools = registry.get_tool_definitions()
-
-    messages = request.history + [{"role": "user", "content": request.message}]
 
     async def generate() -> AsyncGenerator[str, None]:
-        """Generate streaming response with tool calling loop."""
-        # Track tool calls we need to execute
-        pending_tool_calls: list[dict] = []
-        current_tool_call: dict | None = None
-        buffer = ""
-
-        async def execute_tool_calls(tool_calls: list[dict]) -> list[dict]:
-            """Execute a batch of tool calls and return tool result messages."""
-            results = []
-            for tc in tool_calls:
-                function = tc.get("function", {})
-                name = function.get("name", "")
-                args_str = function.get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                except json.JSONDecodeError:
-                    args = {}
-
-                # Execute the skill
-                result = await registry.execute_skill(name, **args)
-
-                # Format as tool result message
-                tool_result = {
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "name": name,
-                    "content": json.dumps({
-                        "success": result.success,
-                        "data": result.data,
-                        "error": result.error,
-                    }),
-                }
-                results.append(tool_result)
-            return results
-
-        # Start the first turn with user message
-        turn_messages = messages
-        turn_count = 0
-        max_turns = 10  # Prevent infinite loops
-
-        while turn_count < max_turns:
-            turn_count += 1
-            pending_tool_calls = []
-            current_tool_call = None
-            buffer = ""
-
-            # Stream this turn
-            async for chunk in client.chat_stream(turn_messages, model=request.model, tools=tools):
-                if chunk.startswith("data: "):
-                    data = chunk[6:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        parsed = json.loads(data)
-                        # Yield content to frontend
-                        if parsed.get("content"):
-                            yield f"data: {json.dumps({'content': parsed['content']})}\n\n"
-                        # Buffer tool calls
-                        if parsed.get("tool_calls"):
-                            for tc in parsed["tool_calls"]:
-                                # Tool calls come in streaming chunks; we need to accumulate them
-                                index = tc.get("index", 0)
-                                while len(pending_tool_calls) <= index:
-                                    pending_tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                                call = pending_tool_calls[index]
-                                if tc.get("id"):
-                                    call["id"] = tc["id"]
-                                if tc.get("type"):
-                                    call["type"] = tc["type"]
-                                func = tc.get("function", {})
-                                if func.get("name"):
-                                    call["function"]["name"] = func["name"]
-                                if func.get("arguments"):
-                                    call["function"]["arguments"] += func["arguments"]
-                    except json.JSONDecodeError:
-                        continue
-
-            # After stream ends, check if we have tool calls to execute
-            complete_tool_calls = [tc for tc in pending_tool_calls if tc.get("function", {}).get("name")]
-
-            if not complete_tool_calls:
-                # No tool calls - we're done
-                break
-
-            # Execute tool calls
-            tool_results = await execute_tool_calls(complete_tool_calls)
-
-            # Add assistant message with tool_calls and tool results to conversation
-            turn_messages = turn_messages + [
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": complete_tool_calls,
-                }
-            ] + tool_results
-
-            # Continue loop - LLM will respond to tool results
-
-        yield "data: [DONE]\n\n"
+        if not client.api_key:
+            yield _sse({"error": True, "code": "no_api_key", "message": NO_API_KEY_MESSAGE})
+        else:
+            try:
+                async for event in stream_chat(client, registry, _conversation(request), request.model):
+                    yield _sse(event)
+            except Exception as exc:  # keep the stream well-formed for the UI
+                logger.exception("Chat stream failed")
+                yield _sse({"error": True, "message": f"Chat failed: {exc}"})
+        yield _sse("[DONE]")
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@app.post("/chat")
+@app.post("/chat", responses={502: {"description": "OpenRouter request failed"}})
 async def chat(request: MessageRequest):
     """Non-streaming chat (fallback) with skill tools."""
     client = get_client()
     if not client.api_key:
-        return {"response": "Please configure your OpenRouter API key in Settings first."}
-
-    # Get skill tool definitions
-    registry = get_skill_registry()
-    tools = registry.get_tool_definitions()
-
-    messages = request.history + [{"role": "user", "content": request.message}]
-    for _ in range(10):
-        result = await client.chat(messages, model=request.model, tools=tools)
-        if result.get("error"):
-            raise HTTPException(status_code=502, detail=result.get("message"))
-
-        assistant_message = result["choices"][0]["message"]
-        tool_calls = assistant_message.get("tool_calls") or []
-        if not tool_calls:
-            return {"response": assistant_message.get("content") or ""}
-
-        tool_results = []
-        for tool_call in tool_calls:
-            function = tool_call.get("function", {})
-            try:
-                arguments = json.loads(function.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                arguments = {}
-            skill_result = await registry.execute_skill(function.get("name", ""), **arguments)
-            tool_results.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id", ""),
-                    "name": function.get("name", ""),
-                    "content": json.dumps(
-                        {
-                            "success": skill_result.success,
-                            "data": skill_result.data,
-                            "error": skill_result.error,
-                        }
-                    ),
-                }
-            )
-        messages.extend([assistant_message, *tool_results])
-
-    raise HTTPException(status_code=502, detail="Tool-calling loop exceeded 10 turns")
+        return {"response": NO_API_KEY_MESSAGE}
+    try:
+        text = await complete_chat(client, get_skill_registry(), _conversation(request), request.model)
+    except ChatLoopError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"response": text}
 
 
 @app.get("/models")
@@ -406,18 +283,14 @@ async def init_voice_pipeline():
 
     # Create LLM handler for the pipeline
     async def llm_handler(text: str) -> str:
-        """Send text to LLM and return the full response."""
+        """Send text to the LLM (with tools) and return the full response."""
         client = get_client()
         if not client.api_key:
-            return "Please configure your OpenRouter API key in Settings first."
-
-        registry = get_skill_registry()
-        tools = registry.get_tool_definitions()
-        messages = [{"role": "user", "content": text}]
-        result = await client.chat(messages, tools=tools)
-        if result.get("error"):
-            return f"Error: {result.get('message', 'Unknown error')}"
-        return result["choices"][0]["message"].get("content", "")
+            return NO_API_KEY_MESSAGE
+        try:
+            return await complete_chat(client, get_skill_registry(), [{"role": "user", "content": text}])
+        except ChatLoopError as exc:
+            return f"Error: {exc}"
 
     pipeline.set_llm_handler(llm_handler)
 

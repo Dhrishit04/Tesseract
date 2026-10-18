@@ -11,6 +11,15 @@ from skills.skill_base import SkillBase
 
 logger = logging.getLogger(__name__)
 
+# OpenAI-compatible APIs only accept [a-zA-Z0-9_-] in function names, while
+# skills are namespaced with dots ("filesystem.read_file").
+TOOL_NAME_SEPARATOR = "__"
+
+
+def to_tool_name(skill_name: str) -> str:
+    """Return the API-safe function name for a skill."""
+    return skill_name.replace(".", TOOL_NAME_SEPARATOR)
+
 
 class SkillRegistry:
     """Registry for discovering, loading, and managing skills."""
@@ -104,7 +113,21 @@ class SkillRegistry:
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """Get all skills as OpenAI-compatible tool definitions."""
-        return [skill.to_tool_definition() for skill in self._skills.values()]
+        definitions = []
+        for skill in self._skills.values():
+            definition = skill.to_tool_definition()
+            definition["function"]["name"] = to_tool_name(skill.name)
+            definitions.append(definition)
+        return definitions
+
+    def resolve_skill_name(self, name: str) -> str:
+        """Map an API-safe tool name back to its registered skill name."""
+        if name in self._skills:
+            return name
+        for skill_name in self._skills:
+            if to_tool_name(skill_name) == name:
+                return skill_name
+        return name
 
     async def execute_skill(self, skill_name: str, **kwargs: Any) -> Any:
         """Execute a skill by name with the given parameters.

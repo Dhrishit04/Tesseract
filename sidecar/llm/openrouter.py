@@ -9,10 +9,20 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
 
 
+def _error(message: str) -> dict:
+    return {"error": True, "message": message}
+
+
 class OpenRouterClient:
-    def __init__(self, api_key: str, base_url: str = OPENROUTER_BASE):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = OPENROUTER_BASE,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+    ):
         self.api_key = api_key
         self.base_url = base_url
+        self.transport = transport
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -20,65 +30,81 @@ class OpenRouterClient:
             "X-Title": "Tesseract AI Agent",
         }
 
+    def _payload(self, messages: list[dict], model: str, tools: Optional[list[dict]], stream: bool) -> dict:
+        payload = {"model": model, "messages": messages, "stream": stream}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        return payload
+
     async def chat_stream(
         self,
         messages: list[dict],
         model: str = DEFAULT_MODEL,
         tools: Optional[list[dict]] = None,
-    ) -> AsyncGenerator[str, None]:
-        """Stream chat completion from OpenRouter. Yields content deltas."""
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+    ) -> AsyncGenerator[dict, None]:
+        """Stream a chat completion.
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=payload,
-            ) as response:
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    yield json.dumps({
-                        "error": True,
-                        "message": f"OpenRouter error {response.status_code}: {error_body.decode()}",
-                    })
-                    return
+        Yields dicts: {"content": str}, {"tool_calls": [...]} or {"error": True, "message": str}.
+        """
+        payload = self._payload(messages, model, tools, stream=True)
+        try:
+            async with httpx.AsyncClient(timeout=60.0, transport=self.transport) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers=self.headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        body = (await response.aread()).decode(errors="replace")
+                        yield _error(f"OpenRouter error {response.status_code}: {body}")
+                        return
 
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            tool_calls = delta.get("tool_calls")
-                            if content:
-                                yield json.dumps({"content": content})
-                            if tool_calls:
-                                yield json.dumps({"tool_calls": tool_calls})
-                        except json.JSONDecodeError:
+                    async for line in response.aiter_lines():
+                        chunk = self._parse_stream_line(line)
+                        if chunk is None:
                             continue
+                        if chunk == "done":
+                            break
+                        yield chunk
+        except httpx.HTTPError as exc:
+            yield _error(f"Could not reach OpenRouter: {exc}")
+
+    @staticmethod
+    def _parse_stream_line(line: str) -> dict | str | None:
+        """Turn one SSE line into a chunk dict, "done", or None to skip."""
+        if not line.startswith("data: "):
+            return None
+        data = line[6:].strip()
+        if data == "[DONE]":
+            return "done"
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            return None
+        if parsed.get("error"):
+            message = parsed["error"].get("message") if isinstance(parsed["error"], dict) else str(parsed["error"])
+            return _error(f"OpenRouter error: {message}")
+        choices = parsed.get("choices") or [{}]
+        delta = choices[0].get("delta", {})
+        chunk = {}
+        if delta.get("content"):
+            chunk["content"] = delta["content"]
+        if delta.get("tool_calls"):
+            chunk["tool_calls"] = delta["tool_calls"]
+        return chunk or None
 
     async def list_models(self) -> list[dict]:
         """Fetch available models from OpenRouter."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{self.base_url}/models",
-                headers=self.headers,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("data", [])
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self.transport) as client:
+                response = await client.get(f"{self.base_url}/models", headers=self.headers)
+        except httpx.HTTPError:
             return []
+        if response.status_code == 200:
+            return response.json().get("data", [])
+        return []
 
     async def chat(
         self,
@@ -87,24 +113,16 @@ class OpenRouterClient:
         tools: Optional[list[dict]] = None,
     ) -> dict:
         """Non-streaming chat completion."""
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=payload,
-            )
-            if response.status_code != 200:
-                return {
-                    "error": True,
-                    "message": f"OpenRouter error {response.status_code}: {response.text}",
-                }
-            return response.json()
+        payload = self._payload(messages, model, tools, stream=False)
+        try:
+            async with httpx.AsyncClient(timeout=60.0, transport=self.transport) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self.headers,
+                    json=payload,
+                )
+        except httpx.HTTPError as exc:
+            return _error(f"Could not reach OpenRouter: {exc}")
+        if response.status_code != 200:
+            return _error(f"OpenRouter error {response.status_code}: {response.text}")
+        return response.json()
