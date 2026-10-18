@@ -3,8 +3,6 @@
 import os
 import tempfile
 import threading
-import time
-from pathlib import Path
 from typing import Callable, Optional
 
 from skills.skill_base import SkillResult
@@ -21,6 +19,10 @@ except ImportError as e:
     np = None
     sd = None
     whisper_cpp_python = None
+
+
+# Settings that are baked into the engine when it is created.
+ENGINE_SETTINGS = ("stt_model", "stt_language")
 
 
 class WhisperSTT:
@@ -222,12 +224,21 @@ class STTSkill:
     def __init__(self):
         self.stt: Optional[WhisperSTT] = None
         self._settings = {}
+        self._rebuild_pending = False
 
     def load_settings(self, settings: dict):
-        """Load voice settings."""
-        self._settings = settings.get("voice", {})
-        self._settings.setdefault("stt_model", "tiny")
-        self._settings.setdefault("stt_language", "en")
+        """Load voice settings; rebuild an idle engine when its own settings changed."""
+        new = dict(settings.get("voice", {}))
+        new.setdefault("stt_model", "tiny")
+        new.setdefault("stt_language", "en")
+        engine = self.stt
+        changed = any(new.get(k) != self._settings.get(k) for k in ENGINE_SETTINGS)
+        if engine is not None and (changed or self._rebuild_pending):
+            # A busy engine is rebuilt the next time settings load while it is idle.
+            self._rebuild_pending = engine._recording
+            if not self._rebuild_pending:
+                self.stt = None
+        self._settings = new
 
     async def transcribe(self, audio_path: str = None) -> SkillResult:
         """Transcribe audio file or start/stop recording."""

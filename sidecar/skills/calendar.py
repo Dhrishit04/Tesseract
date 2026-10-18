@@ -143,7 +143,7 @@ class CalendarListEventsSkill(SkillBase):
                 "time_max": time_max,
             })
         except Exception as e:
-            logger.error(f"Error listing events: {e}")
+            logger.exception("Error listing events")
             return SkillResult.failure(f"Error listing events: {e}")
 
 
@@ -256,7 +256,7 @@ class CalendarCreateEventSkill(SkillBase):
                 "status": "created",
             })
         except Exception as e:
-            logger.error(f"Error creating event: {e}")
+            logger.exception("Error creating event")
             return SkillResult.failure(f"Error creating event: {e}")
 
 
@@ -369,7 +369,7 @@ class CalendarUpdateEventSkill(SkillBase):
                 "status": "updated",
             })
         except Exception as e:
-            logger.error(f"Error updating event: {e}")
+            logger.exception("Error updating event")
             return SkillResult.failure(f"Error updating event: {e}")
 
 
@@ -429,7 +429,7 @@ class CalendarDeleteEventSkill(SkillBase):
                 "status": "deleted",
             })
         except Exception as e:
-            logger.error(f"Error deleting event: {e}")
+            logger.exception("Error deleting event")
             return SkillResult.failure(f"Error deleting event: {e}")
 
 
@@ -517,5 +517,5 @@ class CalendarCheckScheduleSkill(SkillBase):
                 "time_max": time_max,
             })
         except Exception as e:
-            logger.error(f"Error checking schedule: {e}")
+            logger.exception("Error checking schedule")
             return SkillResult.failure(f"Error checking schedule: {e}")

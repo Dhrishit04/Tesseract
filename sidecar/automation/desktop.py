@@ -40,6 +40,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+PYWINAUTO_MISSING = "pywinauto not available"
+NO_WINDOW_SELECTED = "No window selected. Call find_window first."
+NO_CRITERIA = "At least one search criterion required"
+
 
 @dataclass
 class UIElement:
@@ -156,7 +160,7 @@ class DesktopAutomation:
         except ElementNotFoundError:
             return {"success": False, "error": f"Window not found: {criteria}"}
         except Exception as e:
-            logger.error(f"Error finding window: {e}")
+            logger.exception("Error finding window")
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -178,7 +182,7 @@ class DesktopAutomation:
     def focus_window(self, handle: int = None) -> dict[str, Any]:
         """Focus a window by handle (or current window if not specified)."""
         if not PYWINAUTO_AVAILABLE:
-            return {"success": False, "error": "pywinauto not available"}
+            return {"success": False, "error": PYWINAUTO_MISSING}
 
         try:
             hwnd = handle or self._window_handle
@@ -193,99 +197,158 @@ class DesktopAutomation:
             return {"success": True, "handle": hwnd}
 
         except Exception as e:
-            logger.error(f"Error focusing window: {e}")
+            logger.exception("Error focusing window")
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _describe_element(element) -> UIElement:
+        rect = element.rectangle()
+        return UIElement(
+            name=element.window_text() or "",
+            control_type=element.element_info.control_type,
+            rectangle={"left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom},
+            class_name=element.class_name(),
+            automation_id=element.element_info.automation_id or "",
+            is_enabled=element.is_enabled(),
+            is_visible=element.is_visible(),
+        )
+
+    def _build_element_tree(self, element, depth: int, max_depth: int, include_children: bool) -> Optional[UIElement]:
+        """Describe element and (optionally) its descendants; unreadable nodes are skipped."""
+        try:
+            node = self._describe_element(element)
+        except Exception:
+            return None
+        if not include_children or depth >= max_depth:
+            return node
+        try:
+            children = element.children()
+        except Exception:
+            return node
+        for child in children:
+            child_node = self._build_element_tree(child, depth + 1, max_depth, include_children)
+            if child_node:
+                node.children.append(child_node)
+        return node
 
     def get_ui_elements(self, max_depth: int = 3, include_children: bool = True) -> dict[str, Any]:
         """Get the accessibility tree for the current window."""
         if not PYWINAUTO_AVAILABLE:
-            return {"success": False, "error": "pywinauto not available"}
-
+            return {"success": False, "error": PYWINAUTO_MISSING}
         if not self._current_window:
-            return {"success": False, "error": "No window selected. Call find_window first."}
+            return {"success": False, "error": NO_WINDOW_SELECTED}
 
+        root = self._build_element_tree(self._current_window, 0, max_depth, include_children)
+        if not root:
+            return {"success": False, "error": "Failed to build element tree"}
+        return {"success": True, "elements": root.to_dict()}
+
+    @staticmethod
+    def _element_criteria(name: str = None, control_type: str = None, automation_id: str = None) -> dict[str, str]:
+        criteria = {}
+        if name:
+            criteria["title"] = name
+        if control_type:
+            criteria["control_type"] = control_type
+        if automation_id:
+            criteria["automation_id"] = automation_id
+        return criteria
+
+    def _find_element(self, criteria: dict[str, str]) -> Optional[Any]:
+        """Return the UIA element for criteria, or None when accessibility can't see it."""
+        if not (PYWINAUTO_AVAILABLE and self._current_window and criteria):
+            return None
         try:
-            def build_element_tree(element, depth=0):
-                if depth > max_depth:
-                    return None
+            element = self._current_window.child_window(**criteria)
+            return element if element.exists() else None
+        except ElementNotFoundError:
+            return None
 
-                try:
-                    rect = element.rectangle()
-                    ui_element = UIElement(
-                        name=element.window_text() or "",
-                        control_type=element.element_info.control_type,
-                        rectangle={"left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom},
-                        class_name=element.class_name(),
-                        automation_id=element.element_info.automation_id or "",
-                        is_enabled=element.is_enabled(),
-                        is_visible=element.is_visible(),
-                    )
+    def _capture_target(self) -> tuple[Any, tuple[int, int]]:
+        """Capture the current window (or whole screen) and its screen origin."""
+        if self._current_window is not None:
+            rect = self._current_window.rectangle()
+            return ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom)), (rect.left, rect.top)
+        return ImageGrab.grab(), (0, 0)
 
-                    if include_children and depth < max_depth:
-                        try:
-                            children = element.children()
-                            for child in children:
-                                child_tree = build_element_tree(child, depth + 1)
-                                if child_tree:
-                                    ui_element.children.append(child_tree)
-                        except Exception:
-                            pass
+    @staticmethod
+    def _guidance(reason: str, action: str) -> dict[str, Any]:
+        """Last step of the fallback chain: tell the user what to do."""
+        return {
+            "success": False,
+            "error": reason,
+            "guidance": (
+                f"Tesseract could not {action} automatically. Make sure the window is visible and not minimised, "
+                "or enable OCR fallback in Settings > Automation (requires the Tesseract OCR engine). "
+                "You can also do this step yourself and ask Tesseract to continue."
+            ),
+        }
 
-                    return ui_element
-                except Exception:
-                    return None
+    @staticmethod
+    def _ocr_lines(boxes: dict) -> list[list[int]]:
+        """Group OCR word indexes into text lines, in reading order."""
+        lines: dict[tuple, list[int]] = {}
+        for index, word in enumerate(boxes["text"]):
+            if not word.strip() or float(boxes["conf"][index]) < 0:
+                continue
+            key = tuple(boxes.get(field, [0] * len(boxes["text"]))[index] for field in ("block_num", "par_num", "line_num"))
+            lines.setdefault(key, []).append(index)
+        return list(lines.values())
 
-            root = build_element_tree(self._current_window)
-            if not root:
-                return {"success": False, "error": "Failed to build element tree"}
-
-            return {"success": True, "elements": root.to_dict()}
-
-        except Exception as e:
-            logger.error(f"Error getting UI elements: {e}")
-            return {"success": False, "error": str(e)}
+    def _ocr_locate(self, label: str) -> Optional[tuple[int, int]]:
+        """Find the on-screen centre of the first run of OCR words that reads `label`."""
+        wanted = label.lower().split()
+        if not wanted:
+            return None
+        image, (origin_x, origin_y) = self._capture_target()
+        boxes = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+        for line in self._ocr_lines(boxes):
+            words = [boxes["text"][index].strip().lower() for index in line]
+            for start in range(len(words) - len(wanted) + 1):
+                if words[start:start + len(wanted)] != wanted:
+                    continue
+                run = line[start:start + len(wanted)]
+                left = min(boxes["left"][i] for i in run)
+                top = min(boxes["top"][i] for i in run)
+                right = max(boxes["left"][i] + boxes["width"][i] for i in run)
+                bottom = max(boxes["top"][i] + boxes["height"][i] for i in run)
+                return origin_x + (left + right) // 2, origin_y + (top + bottom) // 2
+        return None
 
     def click_element(self, name: str = None, control_type: str = None, automation_id: str = None,
                       coordinates: tuple[int, int] = None) -> dict[str, Any]:
-        """Click a UI element by name, type, automation_id, or coordinates."""
+        """Click by coordinates, then accessibility lookup, then OCR text location, then guidance."""
         if not PYWINAUTO_AVAILABLE and not PYAUTOGUI_AVAILABLE:
             return {"success": False, "error": "No automation backend available (need pywinauto or pyautogui)"}
 
         try:
-            # If coordinates provided, use PyAutoGUI
             if coordinates and PYAUTOGUI_AVAILABLE:
                 x, y = coordinates
                 pyautogui.click(x, y)
                 return {"success": True, "method": "pyautogui", "coordinates": coordinates}
 
-            if not self._current_window:
-                return {"success": False, "error": "No window selected. Call find_window first."}
-
-            # Build search criteria
-            criteria = {}
-            if name:
-                criteria["title"] = name
-            if control_type:
-                criteria["control_type"] = control_type
-            if automation_id:
-                criteria["automation_id"] = automation_id
-
+            criteria = self._element_criteria(name, control_type, automation_id)
             if not criteria:
-                return {"success": False, "error": "At least one search criterion required"}
+                return {"success": False, "error": NO_CRITERIA}
 
-            # Find element
-            element = self._current_window.child_window(**criteria)
-            if not element.exists():
-                return {"success": False, "error": f"Element not found: {criteria}"}
+            element = self._find_element(criteria)
+            if element is not None:
+                element.click_input()
+                return {"success": True, "method": "pywinauto", "criteria": criteria}
 
-            # Click the element
-            element.click_input()
-            return {"success": True, "method": "pywinauto", "criteria": criteria}
+            if self._current_window is None:
+                return self._guidance(NO_WINDOW_SELECTED, f"click '{name or criteria}'")
+            reason = f"Element not found: {criteria}"
+            if self.ocr_enabled and name and PYAUTOGUI_AVAILABLE:
+                location = self._ocr_locate(name)
+                if location:
+                    pyautogui.click(*location)
+                    return {"success": True, "method": "ocr", "coordinates": location, "note": reason}
+                reason = f"{reason}; OCR did not find the text '{name}' either"
+            return self._guidance(reason, f"click '{name or criteria}'")
 
-        except ElementNotFoundError:
-            return {"success": False, "error": f"Element not found: {criteria}"}
         except Exception as e:
-            logger.error(f"Error clicking element: {e}")
+            logger.exception("Error clicking element")
             return {"success": False, "error": str(e)}
 
     def type_text(self, text: str, name: str = None, control_type: str = None,
@@ -304,22 +367,15 @@ class DesktopAutomation:
                 return {"success": True, "method": "pyautogui", "text": text}
 
             if not self._current_window:
-                return {"success": False, "error": "No window selected. Call find_window first."}
+                return {"success": False, "error": NO_WINDOW_SELECTED}
 
-            criteria = {}
-            if name:
-                criteria["title"] = name
-            if control_type:
-                criteria["control_type"] = control_type
-            if automation_id:
-                criteria["automation_id"] = automation_id
-
+            criteria = self._element_criteria(name, control_type, automation_id)
             if not criteria:
-                return {"success": False, "error": "At least one search criterion required"}
+                return {"success": False, "error": NO_CRITERIA}
 
-            element = self._current_window.child_window(**criteria)
-            if not element.exists():
-                return {"success": False, "error": f"Element not found: {criteria}"}
+            element = self._find_element(criteria)
+            if element is None:
+                return self._guidance(f"Element not found: {criteria}", "find the field to type into")
 
             element.set_focus()
             set_edit_text = getattr(element, "set_edit_text", None)
@@ -332,44 +388,36 @@ class DesktopAutomation:
                 element.type_keys(escaped_text, with_spaces=True)
             return {"success": True, "method": "pywinauto", "text": text}
 
-        except ElementNotFoundError:
-            return {"success": False, "error": f"Element not found: {criteria}"}
         except Exception as e:
-            logger.error(f"Error typing text: {e}")
+            logger.exception("Error typing text")
             return {"success": False, "error": str(e)}
 
     def get_element_text(self, name: str = None, control_type: str = None,
                          automation_id: str = None) -> dict[str, Any]:
-        """Get text from a UI element."""
-        if not PYWINAUTO_AVAILABLE:
-            return {"success": False, "error": "pywinauto not available"}
-
-        if not self._current_window:
-            return {"success": False, "error": "No window selected. Call find_window first."}
+        """Read text via accessibility, then OCR of the window, then guidance."""
+        criteria = self._element_criteria(name, control_type, automation_id)
+        if not criteria:
+            return {"success": False, "error": NO_CRITERIA}
 
         try:
-            criteria = {}
-            if name:
-                criteria["title"] = name
-            if control_type:
-                criteria["control_type"] = control_type
-            if automation_id:
-                criteria["automation_id"] = automation_id
+            element = self._find_element(criteria)
+            if element is not None:
+                return {"success": True, "method": "pywinauto", "text": element.window_text()}
 
-            if not criteria:
-                return {"success": False, "error": "At least one search criterion required"}
+            if self._current_window is None:
+                return self._guidance(NO_WINDOW_SELECTED, "read that text")
+            reason = f"Element not found: {criteria}"
+            if not PYWINAUTO_AVAILABLE:
+                reason = "Accessibility automation (pywinauto) is not available"
 
-            element = self._current_window.child_window(**criteria)
-            if not element.exists():
-                return {"success": False, "error": f"Element not found: {criteria}"}
+            if self.ocr_enabled:
+                image, _ = self._capture_target()
+                text = pytesseract.image_to_string(image).strip()
+                return {"success": True, "method": "ocr", "text": text, "note": f"{reason}; returned OCR text of the window"}
+            return self._guidance(reason, "read that text")
 
-            text = element.window_text()
-            return {"success": True, "text": text}
-
-        except ElementNotFoundError:
-            return {"success": False, "error": f"Element not found: {criteria}"}
         except Exception as e:
-            logger.error(f"Error getting element text: {e}")
+            logger.exception("Error getting element text")
             return {"success": False, "error": str(e)}
 
     def screenshot(self, region: tuple[int, int, int, int] = None, full_screen: bool = False) -> dict[str, Any]:
@@ -399,7 +447,7 @@ class DesktopAutomation:
             }
 
         except Exception as e:
-            logger.error(f"Error taking screenshot: {e}")
+            logger.exception("Error taking screenshot")
             return {"success": False, "error": str(e)}
 
     def ocr(self, region: tuple[int, int, int, int] = None, image_base64: str = None) -> dict[str, Any]:
@@ -425,13 +473,13 @@ class DesktopAutomation:
             return {"success": True, "text": text.strip()}
 
         except Exception as e:
-            logger.error(f"Error running OCR: {e}")
+            logger.exception("Error running OCR")
             return {"success": False, "error": str(e)}
 
     def resize_window(self, handle: int = None, width: int = None, height: int = None) -> dict[str, Any]:
         """Resize a window."""
         if not PYWINAUTO_AVAILABLE:
-            return {"success": False, "error": "pywinauto not available"}
+            return {"success": False, "error": PYWINAUTO_MISSING}
 
         try:
             hwnd = handle or self._window_handle
@@ -453,13 +501,13 @@ class DesktopAutomation:
             return {"success": True, "handle": hwnd, "width": width, "height": height}
 
         except Exception as e:
-            logger.error(f"Error resizing window: {e}")
+            logger.exception("Error resizing window")
             return {"success": False, "error": str(e)}
 
     def list_windows(self) -> dict[str, Any]:
         """List all visible windows."""
         if not PYWINAUTO_AVAILABLE:
-            return {"success": False, "error": "pywinauto not available"}
+            return {"success": False, "error": PYWINAUTO_MISSING}
 
         try:
             windows = Desktop(backend="uia").windows()
@@ -496,7 +544,7 @@ class DesktopAutomation:
             return {"success": True, "windows": result}
 
         except Exception as e:
-            logger.error(f"Error listing windows: {e}")
+            logger.exception("Error listing windows")
             return {"success": False, "error": str(e)}
 
     def get_status(self) -> dict[str, Any]:

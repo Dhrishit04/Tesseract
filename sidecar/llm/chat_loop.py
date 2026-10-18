@@ -5,6 +5,7 @@ import logging
 from typing import Any, AsyncGenerator
 
 from llm.openrouter import DEFAULT_MODEL, OpenRouterClient
+from skills.skill_base import SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -29,31 +30,59 @@ def _merge_tool_call_deltas(pending: list[dict], deltas: list[dict]) -> None:
             call["function"]["arguments"] += function["arguments"]
 
 
-def _parse_arguments(raw: str | None) -> dict:
+def _parse_arguments(raw: str | None) -> dict | None:
+    """Tool arguments as a dict, or None when the model sent something that is not a JSON object."""
     try:
         parsed = json.loads(raw or "{}")
     except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _for_model(data: Any) -> Any:
+    """Drop raw screenshot bytes: megabytes of base64 would overflow the model's context."""
+    if isinstance(data, dict) and "image_base64" in data:
+        return {**data, "image_base64": "[screenshot shown to the user in the activity log]"}
+    return data
 
 
 async def _execute_tool_call(registry, call: dict) -> tuple[dict, dict]:
     """Run one tool call. Returns the tool message for the LLM and a UI event."""
     function = call.get("function", {})
     skill_name = registry.resolve_skill_name(function.get("name", ""))
-    result = await registry.execute_skill(skill_name, **_parse_arguments(function.get("arguments")))
+    arguments = _parse_arguments(function.get("arguments"))
+    if arguments is None:
+        # Never run a tool on guessed arguments; let the model correct itself.
+        result = SkillResult.failure("Tool arguments were not valid JSON; nothing was run. Send the call again with a JSON object.")
+    else:
+        result = await registry.execute_skill(skill_name, **arguments)
     message = {
         "role": "tool",
         "tool_call_id": call.get("id", ""),
         "name": function.get("name", ""),
-        "content": json.dumps({"success": result.success, "data": result.data, "error": result.error}, default=str),
+        "content": json.dumps({"success": result.success, "data": _for_model(result.data), "error": result.error}, default=str),
     }
     event = {
         "name": skill_name,
         "status": "done" if result.success else "error",
         "error": result.error,
     }
+    image = result.data.get("image_base64") if isinstance(result.data, dict) else None
+    if image:
+        event["preview"] = f"data:image/png;base64,{image}"
     return message, event
+
+
+async def _stream_turn(client, conversation, model, tools, pending: list[dict]) -> AsyncGenerator[dict, None]:
+    """Stream one model turn, relaying text and collecting tool-call fragments into `pending`."""
+    async for chunk in client.chat_stream(conversation, model=model, tools=tools):
+        if chunk.get("error"):
+            yield chunk
+            return
+        if chunk.get("content"):
+            yield {"content": chunk["content"]}
+        if chunk.get("tool_calls"):
+            _merge_tool_call_deltas(pending, chunk["tool_calls"])
 
 
 async def stream_chat(
@@ -68,14 +97,12 @@ async def stream_chat(
 
     for _ in range(MAX_TOOL_TURNS):
         pending: list[dict] = []
-        async for chunk in client.chat_stream(conversation, model=model, tools=tools):
-            if chunk.get("error"):
-                yield chunk
-                return
-            if chunk.get("content"):
-                yield {"content": chunk["content"]}
-            if chunk.get("tool_calls"):
-                _merge_tool_call_deltas(pending, chunk["tool_calls"])
+        failed = False
+        async for event in _stream_turn(client, conversation, model, tools, pending):
+            failed = failed or bool(event.get("error"))
+            yield event
+        if failed:
+            return
 
         calls = [call for call in pending if call["function"]["name"]]
         if not calls:

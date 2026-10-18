@@ -47,7 +47,7 @@ class Phase11IntegrationTests(unittest.TestCase):
                 json.dumps({"automation": {"automation_enabled": True, "ocr_enabled": True}}),
                 encoding="utf-8",
             )
-            with patch("automation.policy.os.path.expanduser", return_value=home):
+            with patch("os.path.expanduser", return_value=home):
                 from automation.policy import load_automation_policy
 
                 self.assertEqual(

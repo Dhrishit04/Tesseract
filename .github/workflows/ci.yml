@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   frontend:
@@ -15,22 +16,107 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
 
   sidecar:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "./sidecar[google,automation]"
-      - run: python -m unittest discover -s sidecar/tests -p "test_*.py"
-      - run: python -m compileall -q sidecar
+      - run: python -m pip install -e ".[google,automation]"
+      - run: python -m unittest discover -s tests -p "test_*.py" -v
+        env:
+          PYTHONPATH: .
+      - run: python -m compileall -q -x "\.venv" .
 
-  tauri:
+  e2e:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e "./sidecar[google,automation]"
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m unittest tests.e2e.test_workspace_e2e -v
+        working-directory: sidecar
+        env:
+          PYTHONPATH: .
+          TESSERACT_E2E: "1"
+
+  tauri:
+    # Windows runners ship WebView2, so the shell compiles without extra system packages.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Placeholder sidecar binary
+        # tauri-build requires the externalBin to exist; checks and tests do not run it.
+        shell: bash
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p sidecar/dist
+          touch "sidecar/dist/tesseract-sidecar-${triple}.exe"
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+  bundle:
+    # Installers are built on main and for manual runs; unsigned until signing secrets exist.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: [frontend, sidecar, tauri]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Build Python sidecar
+        working-directory: sidecar
+        shell: bash
+        run: |
+          python -m pip install -e ".[google,automation]" pyinstaller
+          python -m PyInstaller --clean --noconfirm pyinstaller.spec
+          ls dist
+      - run: npm ci
+      - run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tesseract-${{ matrix.os }}
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error

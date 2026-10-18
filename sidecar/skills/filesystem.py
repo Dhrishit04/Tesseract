@@ -1,6 +1,5 @@
 """Example filesystem skill for testing the skill system."""
 
-import os
 from pathlib import Path
 from typing import Any
 

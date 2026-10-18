@@ -66,7 +66,7 @@ class WebAutomationNavigateSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Navigation failed"))
         except Exception as e:
-            logger.error(f"Error navigating: {e}")
+            logger.exception("Error navigating")
             return SkillResult.failure(f"Error navigating: {e}")
 
 
@@ -107,7 +107,7 @@ class WebAutomationClickSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Click failed"))
         except Exception as e:
-            logger.error(f"Error clicking: {e}")
+            logger.exception("Error clicking")
             return SkillResult.failure(f"Error clicking: {e}")
 
 
@@ -153,7 +153,7 @@ class WebAutomationTypeSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Type failed"))
         except Exception as e:
-            logger.error(f"Error typing: {e}")
+            logger.exception("Error typing")
             return SkillResult.failure(f"Error typing: {e}")
 
 
@@ -200,7 +200,7 @@ class WebAutomationExtractSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Extract failed"))
         except Exception as e:
-            logger.error(f"Error extracting: {e}")
+            logger.exception("Error extracting")
             return SkillResult.failure(f"Error extracting: {e}")
 
 
@@ -238,7 +238,7 @@ class WebAutomationScreenshotSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Screenshot failed"))
         except Exception as e:
-            logger.error(f"Error taking screenshot: {e}")
+            logger.exception("Error taking screenshot")
             return SkillResult.failure(f"Error taking screenshot: {e}")
 
 
@@ -268,7 +268,7 @@ class WebAutomationGetContentSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Get content failed"))
         except Exception as e:
-            logger.error(f"Error getting page content: {e}")
+            logger.exception("Error getting page content")
             return SkillResult.failure(f"Error getting page content: {e}")
 
 
@@ -316,7 +316,7 @@ class WebAutomationWaitForSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Wait failed"))
         except Exception as e:
-            logger.error(f"Error waiting: {e}")
+            logger.exception("Error waiting")
             return SkillResult.failure(f"Error waiting: {e}")
 
 
@@ -344,5 +344,5 @@ class WebAutomationCloseSkill(SkillBase):
             await orchestrator.stop_web()
             return SkillResult.success({"status": "closed"})
         except Exception as e:
-            logger.error(f"Error closing browser: {e}")
+            logger.exception("Error closing browser")
             return SkillResult.failure(f"Error closing browser: {e}")

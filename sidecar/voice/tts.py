@@ -1,10 +1,7 @@
 """Text-to-Speech using Piper TTS (local) with OpenRouter TTS fallback."""
 
-import asyncio
 import os
 import tempfile
-import threading
-from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -22,6 +19,10 @@ except ImportError as e:
     _import_error = e
     np = None
     sd = None
+
+
+# Settings that are baked into the engine when it is created.
+ENGINE_SETTINGS = ("tts_engine", "tts_voice", "tts_speed", "openrouter_tts_voice")
 
 
 class PiperTTS:
@@ -250,7 +251,7 @@ class TTSEngine:
     async def _play_audio(self, audio_path: str):
         """Play audio file."""
         if not VOICE_DEPS_AVAILABLE:
-            print(f"Audio playback skipped: voice dependencies not available")
+            print("Audio playback skipped: voice dependencies not available")
             return
 
         self._playing = True
@@ -303,17 +304,28 @@ class TTSSkill:
     def __init__(self):
         self.engine: Optional[TTSEngine] = None
         self._settings = {}
+        self._rebuild_pending = False
+        self._openrouter_client: Optional[OpenRouterClient] = None
 
     def load_settings(self, settings: dict):
-        """Load voice settings."""
-        self._settings = settings.get("voice", {})
-        self._settings.setdefault("tts_engine", "piper")
-        self._settings.setdefault("tts_voice", "en_US-lessac-medium")
-        self._settings.setdefault("tts_speed", 1.0)
-        self._settings.setdefault("openrouter_tts_voice", "alloy")
+        """Load voice settings; rebuild an idle engine when its own settings changed."""
+        new = dict(settings.get("voice", {}))
+        new.setdefault("tts_engine", "piper")
+        new.setdefault("tts_voice", "en_US-lessac-medium")
+        new.setdefault("tts_speed", 1.0)
+        new.setdefault("openrouter_tts_voice", "alloy")
+        engine = self.engine
+        changed = any(new.get(k) != self._settings.get(k) for k in ENGINE_SETTINGS)
+        if engine is not None and (changed or self._rebuild_pending):
+            # A busy engine is rebuilt the next time settings load while it is idle.
+            self._rebuild_pending = engine.is_playing()
+            if not self._rebuild_pending:
+                self.engine = None
+        self._settings = new
 
     def set_openrouter_client(self, client: OpenRouterClient):
-        """Set OpenRouter client for fallback."""
+        """Set OpenRouter client for fallback; engines created later receive it too."""
+        self._openrouter_client = client
         if self.engine:
             self.engine.set_openrouter_client(client)
 
@@ -327,6 +339,8 @@ class TTSSkill:
 
         if self.engine is None:
             self.engine = TTSEngine(self._settings)
+            if self._openrouter_client is not None:
+                self.engine.set_openrouter_client(self._openrouter_client)
         return self.engine.initialize()
 
     async def speak(self, text: str) -> SkillResult:

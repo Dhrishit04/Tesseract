@@ -62,7 +62,7 @@ class DesktopAutomationFindWindowSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Find window failed"))
         except Exception as e:
-            logger.error(f"Error finding window: {e}")
+            logger.exception("Error finding window")
             return SkillResult.failure(f"Error finding window: {e}")
 
 
@@ -102,7 +102,7 @@ class DesktopAutomationFocusWindowSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Focus window failed"))
         except Exception as e:
-            logger.error(f"Error focusing window: {e}")
+            logger.exception("Error focusing window")
             return SkillResult.failure(f"Error focusing window: {e}")
 
 
@@ -149,7 +149,7 @@ class DesktopAutomationGetElementsSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Get elements failed"))
         except Exception as e:
-            logger.error(f"Error getting UI elements: {e}")
+            logger.exception("Error getting UI elements")
             return SkillResult.failure(f"Error getting UI elements: {e}")
 
 
@@ -216,7 +216,7 @@ class DesktopAutomationClickSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Click failed"))
         except Exception as e:
-            logger.error(f"Error clicking element: {e}")
+            logger.exception("Error clicking element")
             return SkillResult.failure(f"Error clicking element: {e}")
 
 
@@ -293,7 +293,7 @@ class DesktopAutomationTypeSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Type failed"))
         except Exception as e:
-            logger.error(f"Error typing text: {e}")
+            logger.exception("Error typing text")
             return SkillResult.failure(f"Error typing text: {e}")
 
 
@@ -351,7 +351,7 @@ class DesktopAutomationGetTextSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Get text failed"))
         except Exception as e:
-            logger.error(f"Error getting element text: {e}")
+            logger.exception("Error getting element text")
             return SkillResult.failure(f"Error getting element text: {e}")
 
 
@@ -400,7 +400,7 @@ class DesktopAutomationScreenshotSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Screenshot failed"))
         except Exception as e:
-            logger.error(f"Error taking screenshot: {e}")
+            logger.exception("Error taking screenshot")
             return SkillResult.failure(f"Error taking screenshot: {e}")
 
 
@@ -451,7 +451,7 @@ class DesktopAutomationOCRSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "OCR failed"))
         except Exception as e:
-            logger.error(f"Error running OCR: {e}")
+            logger.exception("Error running OCR")
             return SkillResult.failure(f"Error running OCR: {e}")
 
 
@@ -505,7 +505,7 @@ class DesktopAutomationResizeWindowSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "Resize window failed"))
         except Exception as e:
-            logger.error(f"Error resizing window: {e}")
+            logger.exception("Error resizing window")
             return SkillResult.failure(f"Error resizing window: {e}")
 
 
@@ -545,7 +545,7 @@ class DesktopAutomationListWindowsSkill(SkillBase):
                 return SkillResult.success(result)
             return SkillResult.failure(result.get("error", "List windows failed"))
         except Exception as e:
-            logger.error(f"Error listing windows: {e}")
+            logger.exception("Error listing windows")
             return SkillResult.failure(f"Error listing windows: {e}")
 
 
@@ -574,5 +574,5 @@ class DesktopAutomationCloseSkill(SkillBase):
                 orchestrator.stop_desktop()
             return SkillResult.success({"status": "closed"})
         except Exception as e:
-            logger.error(f"Error closing desktop automation: {e}")
+            logger.exception("Error closing desktop automation")
             return SkillResult.failure(f"Error closing desktop automation: {e}")

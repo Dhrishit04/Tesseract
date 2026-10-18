@@ -9,16 +9,22 @@ pub fn greet(name: &str) -> String {
     format!("Hello, {}! Tesseract is ready.", name)
 }
 
-#[tauri::command]
-pub fn toggle_window(app: tauri::AppHandle) {
+/// Hide the main window if it is visible, otherwise bring it to the front.
+pub fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
+        if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {
             let _ = window.hide();
         } else {
             let _ = window.show();
+            let _ = window.unminimize();
             let _ = window.set_focus();
         }
     }
+}
+
+#[tauri::command]
+pub fn toggle_window(app: tauri::AppHandle) {
+    toggle_main_window(&app);
 }
 
 #[derive(Serialize, Deserialize)]

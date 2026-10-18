@@ -1,94 +1,50 @@
-import { useState, useEffect, useRef } from "react";
-import { listModels } from "../services/api";
-
-interface Model {
-  id: string;
-  name?: string;
-}
+import { useEffect, useState } from "react";
+import { ModelInfo, listModels } from "../services/api";
 
 interface ModelPickerProps {
   currentModel: string;
   onModelChange: (model: string) => void;
 }
 
-export function ModelPicker({ currentModel, onModelChange }: ModelPickerProps) {
-  const [models, setModels] = useState<Model[]>([]);
-  const [isOpen, setIsOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+// Shown until an API key lets the sidecar fetch OpenRouter's full list.
+const STARTER_MODELS: ModelInfo[] = [
+  { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
+  { id: "openai/gpt-4o", name: "GPT-4o" },
+  { id: "google/gemini-pro-1.5", name: "Gemini Pro 1.5" },
+  { id: "meta-llama/llama-3.1-70b-instruct", name: "Llama 3.1 70B" },
+];
+
+export function ModelPicker({ currentModel, onModelChange }: Readonly<ModelPickerProps>) {
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
 
   useEffect(() => {
-    async function fetchModels() {
-      try {
-        const result = await listModels();
-        if (result.length > 0) {
-          setModels(result);
-        } else {
-          // Fallback models when no API key configured
-          setModels([
-            { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
-            { id: "openai/gpt-4o", name: "GPT-4o" },
-            { id: "meta-llama/llama-3.1-70b-instruct", name: "Llama 3.1 70B" },
-            { id: "google/gemini-pro-1.5", name: "Gemini Pro 1.5" },
-          ]);
-        }
-      } catch {
-        setModels([
-          { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
-          { id: "openai/gpt-4o", name: "GPT-4o" },
-        ]);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchModels();
+    let cancelled = false;
+    listModels()
+      .then((result) => !cancelled && setModels(result.length ? result : STARTER_MODELS))
+      .catch(() => !cancelled && setModels(STARTER_MODELS));
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Close on click outside
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
+  if (!models) {
+    return <span className="skeleton skeleton-select" aria-label="Loading models" role="status" />;
+  }
 
-  const displayName = (model: Model) =>
-    model.name || model.id.split("/").pop() || model.id;
+  const options = models.some((model) => model.id === currentModel)
+    ? models
+    : [{ id: currentModel }, ...models];
 
   return (
-    <div ref={dropdownRef} className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-1.5 text-xs bg-tesseract-surface border border-tesseract-border rounded-md text-tesseract-text hover:border-tesseract-accent transition-colors"
-        disabled={loading}
-      >
-        {loading ? "Loading..." : displayName({ id: currentModel })}
-        <span className="text-tesseract-text-muted">▼</span>
-      </button>
-
-      {isOpen && (
-        <div className="absolute top-full mt-1 right-0 w-64 bg-tesseract-surface border border-tesseract-border rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto">
-          {models.map((model) => (
-            <button
-              key={model.id}
-              onClick={() => {
-                onModelChange(model.id);
-                setIsOpen(false);
-              }}
-              className={`w-full text-left px-4 py-2 text-sm hover:bg-tesseract-accent/20 transition-colors ${
-                currentModel === model.id
-                  ? "text-tesseract-accent bg-tesseract-accent/10"
-                  : "text-tesseract-text"
-              }`}
-            >
-              {displayName(model)}
-            </button>
-          ))}
-        </div>
-      )}
+    <div className="model-picker">
+      <label htmlFor="model-picker" className="visually-hidden">Model</label>
+      <select id="model-picker" name="model" value={currentModel} onChange={(event) => onModelChange(event.target.value)}>
+        {options.map((model) => (
+          <option key={model.id} value={model.id}>
+            {model.name ?? model.id}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

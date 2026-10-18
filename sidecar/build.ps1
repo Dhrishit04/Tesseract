@@ -20,6 +20,7 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to install PyInstaller" }
 & $python -m PyInstaller --clean --noconfirm pyinstaller.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-$artifact = Join-Path $PSScriptRoot "dist\tesseract-sidecar-x86_64-pc-windows-msvc.exe"
+$triple = ((& rustc -vV) | Select-String "^host: ").ToString().Split(" ")[1]
+$artifact = Join-Path $PSScriptRoot "dist\tesseract-sidecar-$triple.exe"
 if (-not (Test-Path $artifact)) { throw "Expected sidecar artifact was not created: $artifact" }
 Write-Host "Built $artifact"

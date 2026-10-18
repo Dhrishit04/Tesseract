@@ -1,20 +1,26 @@
 """Google OAuth 2.0 authentication manager for Tesseract.
 
-Handles OAuth flow, token storage with AES-256 encryption, and refresh token flow.
+Handles the OAuth flow (with PKCE and state checking), token storage encrypted
+with AES-256-GCM, refresh, and revocation.
 """
 
-import base64
 import json
 import logging
 import os
-from dataclasses import dataclass
+import secrets
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from cryptography.fernet import Fernet
+import httpx
+from cryptography.exceptions import InvalidTag
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +38,16 @@ ALL_SCOPES = GMAIL_SCOPES + CALENDAR_SCOPES
 
 # Redirect URI for local callback
 REDIRECT_URI = "http://localhost:8765/oauth/callback"
+REVOKE_URI = "https://oauth2.googleapis.com/revoke"
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 
 # Token storage path
 TOKENS_DIR = Path.home() / ".tesseract" / "tokens"
-TOKEN_FILE = TOKENS_DIR / "google_tokens.enc"
-KEY_FILE = TOKENS_DIR / "encryption_key"
+TOKEN_FILENAME = "google_tokens.enc"
+KEY_FILENAME = "encryption_key"
+AES_KEY_BYTES = 32  # AES-256
+NONCE_BYTES = 12
 
 
 @dataclass
@@ -44,308 +55,280 @@ class OAuthStatus:
     """Status of Google OAuth connection."""
     connected: bool
     email: Optional[str] = None
-    scopes: list[str] = None
+    scopes: list[str] = field(default_factory=list)
     expires_at: Optional[float] = None
     error: Optional[str] = None
-
-    def __post_init__(self):
-        if self.scopes is None:
-            self.scopes = []
 
 
 class GoogleOAuthManager:
     """Manages Google OAuth 2.0 authentication for Tesseract."""
 
-    def __init__(self):
+    def __init__(self, tokens_dir: Path = TOKENS_DIR):
+        self._tokens_dir = Path(tokens_dir)
         self._credentials: Optional[Credentials] = None
         self._client_id: Optional[str] = None
         self._client_secret: Optional[str] = None
-        self._fernet: Optional[Fernet] = None
-        self._initialized = False
+        self._pending_flow: Optional[Flow] = None
+        self._pending_state: Optional[str] = None
+        self._email: Optional[str] = None
 
-    def _get_or_create_encryption_key(self) -> bytes:
-        """Get or create the encryption key for token storage."""
-        TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+    @property
+    def _token_file(self) -> Path:
+        return self._tokens_dir / TOKEN_FILENAME
 
-        if KEY_FILE.exists():
-            key = KEY_FILE.read_bytes()
-        else:
-            key = Fernet.generate_key()
-            KEY_FILE.write_bytes(key)
-            # Restrict permissions on Windows (best effort)
-            try:
-                os.chmod(KEY_FILE, 0o600)
-            except Exception:
-                pass
+    @property
+    def _key_file(self) -> Path:
+        return self._tokens_dir / KEY_FILENAME
+
+    # --- Encryption -------------------------------------------------------
+
+    def _read_or_create_key(self) -> bytes:
+        """Return the 256-bit key, replacing a legacy Fernet key if present."""
+        self._tokens_dir.mkdir(parents=True, exist_ok=True)
+        if self._key_file.exists():
+            key = self._key_file.read_bytes()
+            if len(key) == AES_KEY_BYTES:
+                return key
+        key = AESGCM.generate_key(bit_length=AES_KEY_BYTES * 8)
+        self._key_file.write_bytes(key)
+        try:
+            os.chmod(self._key_file, 0o600)
+        except OSError:
+            logger.debug("Could not restrict key file permissions on this platform")
         return key
 
-    def _get_fernet(self) -> Fernet:
-        """Get or create Fernet instance for encryption."""
-        if self._fernet is None:
-            key = self._get_or_create_encryption_key()
-            self._fernet = Fernet(key)
-        return self._fernet
+    def _encrypt(self, plaintext: bytes) -> bytes:
+        nonce = secrets.token_bytes(NONCE_BYTES)
+        return nonce + AESGCM(self._read_or_create_key()).encrypt(nonce, plaintext, None)
+
+    def _decrypt(self, blob: bytes) -> bytes:
+        key = self._key_file.read_bytes()
+        if len(key) == AES_KEY_BYTES:
+            return AESGCM(key).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], None)
+        # Tokens written by earlier versions used Fernet; re-saved as AES-256 on next save.
+        return Fernet(key).decrypt(blob)
+
+    # --- Configuration ----------------------------------------------------
 
     def configure(self, client_id: str, client_secret: str) -> None:
-        """Configure OAuth client credentials.
-
-        Args:
-            client_id: Google OAuth client ID
-            client_secret: Google OAuth client secret
-        """
+        """Configure OAuth client credentials."""
         self._client_id = client_id
         self._client_secret = client_secret
-        self._initialized = True
 
     def is_configured(self) -> bool:
         """Check if OAuth client is configured."""
-        return self._initialized and self._client_id is not None and self._client_secret is not None
+        return bool(self._client_id and self._client_secret)
 
     def load_settings(self, settings: dict) -> None:
-        """Load OAuth settings from settings dict.
-
-        Args:
-            settings: Full settings dict from settings.json
-        """
+        """Load OAuth client settings from the full settings dict."""
         google_settings = settings.get("google", {})
         client_id = google_settings.get("client_id", "")
         client_secret = google_settings.get("client_secret", "")
         if client_id and client_secret:
             self.configure(client_id, client_secret)
+        else:
+            self._client_id = self._client_secret = None
 
-    def get_authorization_url(self) -> str:
-        """Get the Google OAuth authorization URL.
-
-        Returns:
-            Authorization URL to open in browser
-
-        Raises:
-            ValueError: If OAuth client not configured
-        """
-        if not self.is_configured():
-            raise ValueError("Google OAuth not configured. Set client_id and client_secret in settings.")
-
-        flow = Flow.from_client_config(
+    def _new_flow(self) -> Flow:
+        return Flow.from_client_config(
             {
                 "web": {
                     "client_id": self._client_id,
                     "client_secret": self._client_secret,
                     "redirect_uris": [REDIRECT_URI],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_uri": AUTH_URI,
+                    "token_uri": TOKEN_URI,
                 }
             },
             scopes=ALL_SCOPES,
             redirect_uri=REDIRECT_URI,
         )
-        auth_url, _ = flow.authorization_url(
+
+    # --- OAuth flow -------------------------------------------------------
+
+    def get_authorization_url(self) -> str:
+        """Start a sign-in and return the Google consent URL.
+
+        The flow object is kept until the callback because it holds the PKCE
+        code verifier that Google requires during the token exchange.
+        """
+        if not self.is_configured():
+            raise ValueError("Google OAuth not configured. Set client_id and client_secret in settings.")
+
+        flow = self._new_flow()
+        auth_url, state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
             prompt="consent",  # Force consent to get refresh token
         )
+        self._pending_flow = flow
+        self._pending_state = state
         return auth_url
 
-    async def handle_callback(self, code: str) -> OAuthStatus:
-        """Handle OAuth callback and exchange code for tokens.
-
-        Args:
-            code: Authorization code from Google redirect
-
-        Returns:
-            OAuthStatus with connection info
-        """
+    def handle_callback(self, code: str, state: Optional[str]) -> OAuthStatus:
+        """Exchange the authorization code from Google's redirect for tokens."""
         if not self.is_configured():
             return OAuthStatus(connected=False, error="Google OAuth not configured")
+        flow = self._pending_flow
+        if flow is None:
+            return OAuthStatus(connected=False, error="No sign-in in progress. Start again from Settings.")
+        if not state or not secrets.compare_digest(state, self._pending_state or ""):
+            return OAuthStatus(connected=False, error="Sign-in state did not match. Start again from Settings.")
 
+        self._pending_flow = None
+        self._pending_state = None
         try:
-            flow = Flow.from_client_config(
-                {
-                    "web": {
-                        "client_id": self._client_id,
-                        "client_secret": self._client_secret,
-                        "redirect_uris": [REDIRECT_URI],
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token",
-                    }
-                },
-                scopes=ALL_SCOPES,
-                redirect_uri=REDIRECT_URI,
-            )
             flow.fetch_token(code=code)
-            self._credentials = flow.credentials
+        except Exception as exc:
+            logger.exception("OAuth token exchange failed")
+            return OAuthStatus(connected=False, error=str(exc))
 
-            # Save encrypted tokens
-            await self._save_credentials()
+        self._credentials = flow.credentials
+        self._email = None
+        self._store_credentials()
+        return self._connected_status()
 
-            # Get user email
-            email = await self._get_user_email()
+    # --- Token storage ----------------------------------------------------
 
-            return OAuthStatus(
-                connected=True,
-                email=email,
-                scopes=list(self._credentials.scopes) if self._credentials.scopes else [],
-                expires_at=self._credentials.expiry.timestamp() if self._credentials.expiry else None,
-            )
-        except Exception as e:
-            logger.error(f"OAuth callback error: {e}")
-            return OAuthStatus(connected=False, error=str(e))
-
-    async def _save_credentials(self) -> None:
-        """Save credentials to encrypted file."""
+    def _store_credentials(self) -> None:
+        """Save credentials to the encrypted token file."""
         if not self._credentials:
             return
-
         token_data = {
             "token": self._credentials.token,
             "refresh_token": self._credentials.refresh_token,
             "token_uri": self._credentials.token_uri,
             "client_id": self._credentials.client_id,
             "client_secret": self._credentials.client_secret,
-            "scopes": list(self._credentials.scopes) if self._credentials.scopes else [],
+            "scopes": list(self._credentials.scopes or []),
             "expiry": self._credentials.expiry.isoformat() if self._credentials.expiry else None,
         }
+        encrypted = self._encrypt(json.dumps(token_data).encode())
+        self._token_file.write_bytes(encrypted)
 
-        fernet = self._get_fernet()
-        encrypted = fernet.encrypt(json.dumps(token_data).encode())
-        TOKEN_FILE.write_bytes(encrypted)
-
-    async def load_credentials(self) -> bool:
-        """Load credentials from encrypted file.
-
-        Returns:
-            True if credentials loaded successfully
-        """
-        if not TOKEN_FILE.exists():
+    def load_credentials(self) -> bool:
+        """Load credentials from the encrypted token file."""
+        if not self._token_file.exists() or not self._key_file.exists():
             return False
-
         try:
-            fernet = self._get_fernet()
-            encrypted = TOKEN_FILE.read_bytes()
-            token_data = json.loads(fernet.decrypt(encrypted).decode())
-
-            self._credentials = Credentials(
-                token=token_data.get("token"),
-                refresh_token=token_data.get("refresh_token"),
-                token_uri=token_data.get("token_uri"),
-                client_id=token_data.get("client_id"),
-                client_secret=token_data.get("client_secret"),
-                scopes=token_data.get("scopes"),
-            )
-
-            # Parse expiry if present
-            if token_data.get("expiry"):
-                from datetime import datetime
-                self._credentials.expiry = datetime.fromisoformat(token_data["expiry"])
-
-            # Refresh if expired
-            if self._credentials.expired and self._credentials.refresh_token:
-                await self._refresh_credentials()
-
-            return self._credentials is not None and self._credentials.valid
-        except Exception as e:
-            logger.error(f"Failed to load credentials: {e}")
+            token_data = json.loads(self._decrypt(self._token_file.read_bytes()).decode())
+        except (InvalidTag, InvalidToken, ValueError, KeyError, OSError):
+            # A damaged token file must never stop the sidecar from starting; the user can reconnect.
+            logger.exception("Failed to read stored Google tokens")
             return False
 
-    async def _refresh_credentials(self) -> bool:
-        """Refresh expired access token using refresh token.
+        credentials = Credentials(
+            token=token_data.get("token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+        if token_data.get("expiry"):
+            credentials.expiry = datetime.fromisoformat(token_data["expiry"])
+        self._credentials = credentials
+        if credentials.expired:
+            self._refresh_credentials()
+        return credentials.valid
 
-        Returns:
-            True if refresh successful
-        """
+    def _refresh_credentials(self) -> bool:
+        """Refresh an expired access token using the refresh token."""
         if not self._credentials or not self._credentials.refresh_token:
             return False
-
         try:
             self._credentials.refresh(Request())
-            await self._save_credentials()
-            return True
-        except Exception as e:
-            logger.error(f"Token refresh failed: {e}")
+        except Exception:
+            logger.exception("Google token refresh failed")
             return False
+        self._store_credentials()
+        return True
 
-    async def _get_user_email(self) -> Optional[str]:
-        """Get the authenticated user's email address."""
-        if not self._credentials or not self._credentials.valid:
-            return None
-
-        try:
-            from googleapiclient.discovery import build
-            service = build("oauth2", "v2", credentials=self._credentials)
-            user_info = service.userinfo().get().execute()
-            return user_info.get("email")
-        except Exception as e:
-            logger.error(f"Failed to get user email: {e}")
-            return None
+    # --- Status -----------------------------------------------------------
 
     def get_credentials(self) -> Optional[Credentials]:
-        """Get valid credentials, refreshing if needed.
-
-        Returns:
-            Valid Credentials object or None
-        """
+        """Return valid credentials, refreshing them first if they expired."""
         if not self._credentials:
             return None
-
-        if self._credentials.expired and self._credentials.refresh_token:
-            import asyncio
-            asyncio.create_task(self._refresh_credentials())
-
+        if self._credentials.expired:
+            self._refresh_credentials()
         return self._credentials if self._credentials.valid else None
 
-    async def get_status(self) -> OAuthStatus:
+    def _lookup_email(self) -> Optional[str]:
+        """Read the account address via the Gmail profile (covered by gmail.readonly)."""
+        if self._email:
+            return self._email
+        try:
+            service = build("gmail", "v1", credentials=self._credentials, cache_discovery=False)
+            self._email = service.users().getProfile(userId="me").execute().get("emailAddress")
+        except Exception as exc:
+            logger.warning("Could not read Google account address: %s", exc)
+        return self._email
+
+    def _connected_status(self) -> OAuthStatus:
+        credentials = self._credentials
+        expiry = credentials.expiry if credentials else None
+        return OAuthStatus(
+            connected=True,
+            email=self._lookup_email(),
+            scopes=list((credentials.scopes if credentials else None) or []),
+            expires_at=expiry.timestamp() if expiry else None,
+        )
+
+    def get_status(self) -> OAuthStatus:
         """Get current OAuth connection status."""
         if not self.is_configured():
             return OAuthStatus(connected=False, error="Not configured")
-
-        # Try to load saved credentials
         if self._credentials is None:
-            await self.load_credentials()
-
-        if self._credentials and self._credentials.valid:
-            email = await self._get_user_email()
-            return OAuthStatus(
-                connected=True,
-                email=email,
-                scopes=list(self._credentials.scopes) if self._credentials.scopes else [],
-                expires_at=self._credentials.expiry.timestamp() if self._credentials.expiry else None,
-            )
-        elif self._credentials:
-            # Has credentials but expired and no refresh token
-            return OAuthStatus(
-                connected=False,
-                error="Token expired, re-authentication required",
-            )
-        else:
-            return OAuthStatus(connected=False, error="Not authenticated")
+            self.load_credentials()
+        if self.get_credentials():
+            return self._connected_status()
+        if self._credentials:
+            return OAuthStatus(connected=False, error="Token expired, re-authentication required")
+        return OAuthStatus(connected=False, error="Not authenticated")
 
     async def disconnect(self) -> OAuthStatus:
-        """Disconnect and remove stored tokens."""
-        self._credentials = None
+        """Revoke Google access and remove stored tokens."""
+        credentials, self._credentials, self._email = self._credentials, None, None
+        token = credentials and (credentials.refresh_token or credentials.token)
+        if token:
+            await _revoke_token(token)
         try:
-            if TOKEN_FILE.exists():
-                TOKEN_FILE.unlink()
-            if KEY_FILE.exists():
-                KEY_FILE.unlink()
-            return OAuthStatus(connected=False, error="Disconnected")
-        except Exception as e:
-            logger.error(f"Error during disconnect: {e}")
-            return OAuthStatus(connected=False, error=str(e))
+            self._token_file.unlink(missing_ok=True)
+            self._key_file.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.exception("Error removing stored Google tokens")
+            return OAuthStatus(connected=False, error=str(exc))
+        return OAuthStatus(connected=False, error="Disconnected")
+
+    # --- Services ---------------------------------------------------------
 
     def get_gmail_service(self):
         """Get authenticated Gmail API service."""
         creds = self.get_credentials()
         if not creds:
-            raise ValueError("No valid credentials. Run OAuth flow first.")
-        from googleapiclient.discovery import build
-        return build("gmail", "v1", credentials=creds)
+            raise ValueError("Google account not connected. Connect it in Settings.")
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     def get_calendar_service(self):
         """Get authenticated Calendar API service."""
         creds = self.get_credentials()
         if not creds:
-            raise ValueError("No valid credentials. Run OAuth flow first.")
-        from googleapiclient.discovery import build
-        return build("calendar", "v3", credentials=creds)
+            raise ValueError("Google account not connected. Connect it in Settings.")
+        return build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+
+async def _revoke_token(token: str) -> None:
+    """Ask Google to revoke a token. Failure is logged; local tokens are removed regardless."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                REVOKE_URI,
+                params={"token": token},
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Token revocation request failed: %s", exc)
 
 
 # Global instance

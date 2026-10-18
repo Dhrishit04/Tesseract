@@ -123,7 +123,7 @@ class GmailReadInboxSkill(SkillBase):
 
             return SkillResult.success({"emails": emails, "count": len(emails)})
         except Exception as e:
-            logger.error(f"Error reading inbox: {e}")
+            logger.exception("Error reading inbox")
             return SkillResult.failure(f"Error reading inbox: {e}")
 
 
@@ -210,7 +210,7 @@ class GmailSendEmailSkill(SkillBase):
                 "status": "sent",
             })
         except Exception as e:
-            logger.error(f"Error sending email: {e}")
+            logger.exception("Error sending email")
             return SkillResult.failure(f"Error sending email: {e}")
 
 
@@ -275,7 +275,7 @@ class GmailSearchSkill(SkillBase):
 
             return SkillResult.success({"emails": emails, "count": len(emails), "query": query})
         except Exception as e:
-            logger.error(f"Error searching emails: {e}")
+            logger.exception("Error searching emails")
             return SkillResult.failure(f"Error searching emails: {e}")
 
 
@@ -351,7 +351,7 @@ class GmailDraftReplySkill(SkillBase):
                 "status": "draft_created",
             })
         except Exception as e:
-            logger.error(f"Error creating draft: {e}")
+            logger.exception("Error creating draft")
             return SkillResult.failure(f"Error creating draft: {e}")
 
 
@@ -404,5 +404,5 @@ class GmailGetThreadSkill(SkillBase):
                 "count": len(messages),
             })
         except Exception as e:
-            logger.error(f"Error getting thread: {e}")
+            logger.exception("Error getting thread")
             return SkillResult.failure(f"Error getting thread: {e}")

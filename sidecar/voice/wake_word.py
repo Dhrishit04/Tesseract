@@ -4,7 +4,6 @@ import os
 import struct
 import threading
 import time
-from pathlib import Path
 from typing import Callable, Optional
 
 from skills.skill_base import SkillResult
@@ -21,6 +20,10 @@ except ImportError as e:
     pvporcupine = None
     sd = None
     np = None
+
+
+# Settings that are baked into the engine when it is created.
+ENGINE_SETTINGS = ("wake_word", "porcupine_access_key")
 
 
 class WakeWordDetector:
@@ -189,14 +192,29 @@ class WakeWordSkill:
     def __init__(self):
         self.detector: Optional[WakeWordDetector] = None
         self._settings = {}
+        self._rebuild_pending = False
+        self._callback: Optional[Callable[[str], None]] = None
 
     def load_settings(self, settings: dict):
-        """Load voice settings."""
-        self._settings = settings.get("voice", {})
-        # Default to a built-in keyword if no custom one configured
-        self._settings.setdefault("wake_word", "jarvis")
-        self._settings.setdefault("wake_word_enabled", True)
-        self._settings.setdefault("porcupine_access_key", "")
+        """Load voice settings; rebuild an idle engine when its own settings changed."""
+        new = dict(settings.get("voice", {}))
+        new.setdefault("wake_word", "jarvis")
+        new.setdefault("wake_word_enabled", True)
+        new.setdefault("porcupine_access_key", "")
+        engine = self.detector
+        changed = any(new.get(k) != self._settings.get(k) for k in ENGINE_SETTINGS)
+        if engine is not None and (changed or self._rebuild_pending):
+            # A busy engine is rebuilt the next time settings load while it is idle.
+            self._rebuild_pending = engine._running
+            if not self._rebuild_pending:
+                self.detector = None
+        self._settings = new
+
+    def set_detection_callback(self, callback: Callable[[str], None]) -> None:
+        """Who is told about a detection, including detectors created later."""
+        self._callback = callback
+        if self.detector is not None:
+            self.detector.on_detected = callback
 
     async def start_listening(self) -> SkillResult:
         """Start wake word detection."""
@@ -210,7 +228,7 @@ class WakeWordSkill:
             self.detector = WakeWordDetector(
                 access_key=self._settings.get("porcupine_access_key", ""),
                 keywords=[self._settings.get("wake_word", "jarvis")],
-                on_detected=self._on_wake_word,
+                on_detected=self._callback or self._on_wake_word,
             )
 
         result = self.detector.start()
@@ -237,7 +255,7 @@ class WakeWordSkill:
         """Get current wake word status."""
         return {
             "enabled": self._settings.get("wake_word_enabled", False),
-            "active": self._settings.get("wake_word_active", False),
+            "active": bool(self.detector and self.detector._running),
             "wake_word": self._settings.get("wake_word", "jarvis"),
             "has_access_key": bool(self._settings.get("porcupine_access_key")),
             "dependencies_available": VOICE_DEPS_AVAILABLE,

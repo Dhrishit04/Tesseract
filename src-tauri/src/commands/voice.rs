@@ -8,6 +8,9 @@ pub struct VoiceStatus {
     pub tts: serde_json::Value,
     pub pipeline: Option<serde_json::Value>,
     pub enabled: bool,
+    /// False when the optional voice packages are not installed in the sidecar.
+    #[serde(default)]
+    pub deps_available: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -184,4 +187,18 @@ pub async fn stop_voice_pipeline(app: tauri::AppHandle) -> Result<VoiceCommandRe
 
     let _ = app.emit("voice-status-changed", ());
     Ok(result)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_proxy_keeps_dependency_flag() {
+        let body = r#"{"wake_word":{},"stt":{},"tts":{},"pipeline":null,"enabled":true,"deps_available":false}"#;
+
+        let status: VoiceStatus = serde_json::from_str(body).unwrap();
+        let forwarded = serde_json::to_value(&status).unwrap();
+
+        assert_eq!(forwarded["deps_available"], false);
+    }
 }

@@ -1,53 +1,40 @@
-/// Frontend service for voice control via Tauri commands
+// Voice controls. Inside the desktop app these go through Tauri commands (which also
+// broadcast "voice-status-changed"); in a plain browser they call the sidecar directly.
 
 import { invoke } from "@tauri-apps/api/core";
+import { isTauri, postJson, sidecarJson } from "../lib/sidecar";
+
+interface ComponentStatus {
+  active?: boolean;
+  recording?: boolean;
+  playing?: boolean;
+}
 
 export interface VoiceStatus {
-  wake_word: any;
-  stt: any;
-  tts: any;
-  pipeline: any;
+  wake_word: ComponentStatus;
+  stt: ComponentStatus;
+  tts: ComponentStatus;
+  pipeline: { running?: boolean; processing?: boolean } | null;
   enabled: boolean;
+  deps_available?: boolean;
 }
 
 export interface VoiceCommandResponse {
   success: boolean;
-  data?: any;
+  data?: { text?: string } & Record<string, unknown>;
   error?: string;
 }
 
-export async function getVoiceStatus(): Promise<VoiceStatus> {
-  return invoke<VoiceStatus>("get_voice_status");
+function command(tauriCommand: string, path: string): Promise<VoiceCommandResponse> {
+  return isTauri() ? invoke<VoiceCommandResponse>(tauriCommand) : postJson<VoiceCommandResponse>(path);
 }
 
-export async function startWakeWord(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("start_wake_word");
+export function getVoiceStatus(): Promise<VoiceStatus> {
+  return isTauri() ? invoke<VoiceStatus>("get_voice_status") : sidecarJson<VoiceStatus>("/voice/status");
 }
 
-export async function stopWakeWord(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("stop_wake_word");
-}
-
-export async function startSttRecording(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("start_stt_recording");
-}
-
-export async function stopSttRecording(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("stop_stt_recording");
-}
-
-export async function speakText(text: string): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("speak_text", { text });
-}
-
-export async function stopTts(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("stop_tts");
-}
-
-export async function startVoicePipeline(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("start_voice_pipeline");
-}
-
-export async function stopVoicePipeline(): Promise<VoiceCommandResponse> {
-  return invoke<VoiceCommandResponse>("stop_voice_pipeline");
-}
+export const startSttRecording = () => command("start_stt_recording", "/voice/stt/start");
+export const stopSttRecording = () => command("stop_stt_recording", "/voice/stt/stop");
+export const stopTts = () => command("stop_tts", "/voice/tts/stop");
+export const startVoicePipeline = () => command("start_voice_pipeline", "/voice/pipeline/start");
+export const stopVoicePipeline = () => command("stop_voice_pipeline", "/voice/pipeline/stop");

@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import pkgutil
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 # OpenAI-compatible APIs only accept [a-zA-Z0-9_-] in function names, while
 # skills are namespaced with dots ("filesystem.read_file").
 TOOL_NAME_SEPARATOR = "__"
+NOT_SKILL_MODULES = {"skill_base", "registry"}
 
 
 def to_tool_name(skill_name: str) -> str:
@@ -40,22 +42,16 @@ class SkillRegistry:
         self._loaded = False
 
     def discover_skills(self) -> list[str]:
-        """Discover all Python files in the skills directory that could be skills.
+        """Return the names of modules in the skills directory that may define skills.
 
-        Returns:
-            List of module names (without .py extension) that look like skills
+        Uses pkgutil rather than globbing for .py files so discovery also works
+        in a PyInstaller build, where modules live in an archive as bytecode.
         """
-        skill_modules = []
-        for py_file in self.skills_dir.glob("*.py"):
-            # Skip __init__.py, skill_base.py, registry.py, and private modules
-            if py_file.name.startswith("_") or py_file.name in {
-                "__init__.py",
-                "skill_base.py",
-                "registry.py",
-            }:
-                continue
-            skill_modules.append(py_file.stem)
-        return skill_modules
+        return sorted(
+            module.name
+            for module in pkgutil.iter_modules([str(self.skills_dir)])
+            if not module.name.startswith("_") and module.name not in NOT_SKILL_MODULES
+        )
 
     def load_skills(self) -> dict[str, SkillBase]:
         """Load all discovered skills into the registry.
@@ -69,8 +65,8 @@ class SkillRegistry:
         for module_name in self.discover_skills():
             try:
                 self._load_skill_module(module_name)
-            except Exception as e:
-                logger.error(f"Failed to load skill module '{module_name}': {e}")
+            except Exception:
+                logger.exception(f"Failed to load skill module '{module_name}'")
 
         self._loaded = True
         logger.info(f"Loaded {len(self._skills)} skills: {list(self._skills.keys())}")
@@ -82,8 +78,8 @@ class SkillRegistry:
 
         try:
             module = importlib.import_module(module_path)
-        except ImportError as e:
-            logger.error(f"Failed to import skill module '{module_name}': {e}")
+        except ImportError:
+            logger.exception(f"Failed to import skill module '{module_name}'")
             return
 
         # Find all SkillBase subclasses in the module
@@ -100,8 +96,8 @@ class SkillRegistry:
                         continue
                     self._skills[instance.name] = instance
                     logger.info(f"Registered skill: {instance.name}")
-                except Exception as e:
-                    logger.error(f"Failed to instantiate skill '{name}' from {module_name}: {e}")
+                except Exception:
+                    logger.exception(f"Failed to instantiate skill '{name}' from {module_name}")
 
     def get_skill(self, name: str) -> SkillBase | None:
         """Get a skill by name."""
@@ -149,7 +145,7 @@ class SkillRegistry:
             result = await skill.execute(**kwargs)
             return result
         except Exception as e:
-            logger.error(f"Error executing skill '{skill_name}': {e}")
+            logger.exception(f"Error executing skill '{skill_name}'")
             from skills.skill_base import SkillResult
 
             return SkillResult.failure(f"Skill execution error: {e}")

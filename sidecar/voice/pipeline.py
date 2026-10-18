@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from skills.skill_base import SkillResult
 
@@ -36,7 +36,9 @@ class VoicePipeline:
         self._on_state_change: Optional[Callable[[str], None]] = None
         self._on_transcription: Optional[Callable[[str], None]] = None
         self._on_response: Optional[Callable[[str], None]] = None
-        self._llm_handler: Optional[Callable[[str], asyncio.coroutine]] = None
+        self._llm_handler: Optional[Callable[[str], Awaitable[str]]] = None
+        # Loop the server runs on; wake word callbacks arrive on the audio thread.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # These get set by the server after initialization
         self._wake_word_skill = None
@@ -102,11 +104,11 @@ class VoicePipeline:
             return SkillResult.failure("TTS skill not configured")
 
         self._running = True
+        self._loop = asyncio.get_running_loop()
         self._emit_state("starting")
 
         # Set wake word callback to trigger recording
-        if self._wake_word_skill.detector:
-            self._wake_word_skill.detector.on_detected = self._on_wake_word_detected
+        self._wake_word_skill.set_detection_callback(self._on_wake_word_detected)
 
         # Start wake word listening
         result = await self._wake_word_skill.start_listening()
@@ -140,16 +142,10 @@ class VoicePipeline:
             logger.info("Already processing a conversation turn, ignoring wake word")
             return
 
-        # Schedule the async conversation turn on the event loop
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(self._conversation_turn())
-            else:
-                loop.run_until_complete(self._conversation_turn())
-        except RuntimeError:
-            # No event loop — create one
-            asyncio.run(self._conversation_turn())
+        if self._loop is None or self._loop.is_closed():
+            logger.error("Wake word detected but the pipeline has no running event loop")
+            return
+        asyncio.run_coroutine_threadsafe(self._conversation_turn(), self._loop)
 
     async def _conversation_turn(self):
         """Execute a single conversation turn: record → transcribe → LLM → speak."""
@@ -205,8 +201,8 @@ class VoicePipeline:
             if self._llm_handler:
                 try:
                     response_text = await self._llm_handler(transcribed_text)
-                except Exception as e:
-                    logger.error(f"LLM handler error: {e}")
+                except Exception:
+                    logger.exception("LLM handler error")
                     response_text = "I'm sorry, I encountered an error processing your request."
             else:
                 response_text = f"I heard you say: {transcribed_text}"
@@ -221,8 +217,8 @@ class VoicePipeline:
                 if not speak_result.success:
                     logger.error(f"TTS failed: {speak_result.error}")
 
-        except Exception as e:
-            logger.error(f"Conversation turn error: {e}")
+        except Exception:
+            logger.exception("Conversation turn error")
             self._emit_state("error")
 
         finally:
@@ -231,9 +227,7 @@ class VoicePipeline:
             # Resume wake word listening if pipeline is still running
             if self._running and self._wake_word_skill:
                 self._emit_state("listening")
-                # Re-set the callback
-                if self._wake_word_skill.detector:
-                    self._wake_word_skill.detector.on_detected = self._on_wake_word_detected
+                self._wake_word_skill.set_detection_callback(self._on_wake_word_detected)
                 await self._wake_word_skill.start_listening()
 
     async def process_text_input(self, text: str) -> SkillResult:
@@ -257,8 +251,8 @@ class VoicePipeline:
             if self._llm_handler:
                 try:
                     response_text = await self._llm_handler(text)
-                except Exception as e:
-                    logger.error(f"LLM handler error: {e}")
+                except Exception:
+                    logger.exception("LLM handler error")
                     response_text = "I'm sorry, I encountered an error processing your request."
             else:
                 response_text = f"Echo: {text}"
@@ -272,7 +266,7 @@ class VoicePipeline:
             return SkillResult.success({"response": response_text})
 
         except Exception as e:
-            logger.error(f"Text processing error: {e}")
+            logger.exception("Text processing error")
             return SkillResult.failure(f"Processing error: {e}")
 
         finally:

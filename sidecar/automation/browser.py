@@ -1,10 +1,15 @@
 """Playwright-based web automation for Tesseract."""
 
-import asyncio
 import base64
 from dataclasses import dataclass, field
-from typing import Any, Optional
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser, BrowserContext, Page
+
+PLAYWRIGHT_MISSING = (
+    'Web automation needs Playwright. Run: pip install -e ".[automation]" && python -m playwright install chromium'
+)
 
 
 @dataclass
@@ -12,12 +17,16 @@ class WebAutomation:
     """Playwright web automation engine."""
     headless: bool = True
     timeout: int = 30000
-    _browser: Optional[Browser] = field(default=None, init=False)
-    _context: Optional[BrowserContext] = field(default=None, init=False)
-    _page: Optional[Page] = field(default=None, init=False)
+    _browser: Optional["Browser"] = field(default=None, init=False)
+    _context: Optional["BrowserContext"] = field(default=None, init=False)
+    _page: Optional["Page"] = field(default=None, init=False)
     _playwright: Any = field(default=None, init=False)
 
     async def __aenter__(self) -> "WebAutomation":
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise RuntimeError(PLAYWRIGHT_MISSING) from exc
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=self.headless)
         self._context = await self._browser.new_context()

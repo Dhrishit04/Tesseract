@@ -3,8 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f3f1eb" />
-    <title>Tesseract — Make room for better thinking</title>
+    <meta name="theme-color" content="#F4F1F6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#151628" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="Tesseract is a desktop assistant that works with your files, apps, browser and Google account." />
+    <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+    <title>Tesseract</title>
+    <script>
+      // Apply the saved theme before the app renders so the window never flashes the wrong one.
+      (function () {
+        var preference = "system";
+        try { preference = localStorage.getItem("tesseract.theme") || "system"; } catch (e) {}
+        var dark = preference === "dark" ||
+          (preference !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
