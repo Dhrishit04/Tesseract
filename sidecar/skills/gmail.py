@@ -4,7 +4,7 @@ import base64
 import logging
 from typing import Any
 
-from skills.skill_base import SkillBase, SkillResult
+from skills.skill_base import BlockingSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +51,14 @@ def _extract_body(payload: dict) -> str:
                 if result:
                     return result
     else:
-        if payload.get("mimeType") == "text/plain":
+        if payload.get("mimeType") in ("text/plain", "text/html"):
             data = payload.get("body", {}).get("data", "")
             if data:
                 return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
     return ""
 
 
-class GmailReadInboxSkill(SkillBase):
+class GmailReadInboxSkill(BlockingSkill):
     """Skill to read recent emails from Gmail inbox."""
 
     @property
@@ -94,7 +94,7 @@ class GmailReadInboxSkill(SkillBase):
             },
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         max_results = kwargs.get("max_results", 10)
         query = kwargs.get("query", "in:inbox")
         include_body = kwargs.get("include_body", False)
@@ -127,7 +127,7 @@ class GmailReadInboxSkill(SkillBase):
             return SkillResult.failure(f"Error reading inbox: {e}")
 
 
-class GmailSendEmailSkill(SkillBase):
+class GmailSendEmailSkill(BlockingSkill):
     """Skill to send an email via Gmail."""
 
     @property
@@ -169,7 +169,7 @@ class GmailSendEmailSkill(SkillBase):
             "required": ["to", "subject", "body"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         to = kwargs.get("to", "")
         subject = kwargs.get("subject", "")
         body = kwargs.get("body", "")
@@ -214,7 +214,7 @@ class GmailSendEmailSkill(SkillBase):
             return SkillResult.failure(f"Error sending email: {e}")
 
 
-class GmailSearchSkill(SkillBase):
+class GmailSearchSkill(BlockingSkill):
     """Skill to search Gmail emails."""
 
     @property
@@ -245,7 +245,7 @@ class GmailSearchSkill(SkillBase):
             "required": ["query"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         query = kwargs.get("query", "")
         max_results = kwargs.get("max_results", 20)
 
@@ -279,7 +279,7 @@ class GmailSearchSkill(SkillBase):
             return SkillResult.failure(f"Error searching emails: {e}")
 
 
-class GmailDraftReplySkill(SkillBase):
+class GmailDraftReplySkill(BlockingSkill):
     """Skill to draft a reply to an email."""
 
     @property
@@ -307,7 +307,7 @@ class GmailDraftReplySkill(SkillBase):
             "required": ["message_id", "body"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         message_id = kwargs.get("message_id", "")
         body = kwargs.get("body", "")
 
@@ -355,7 +355,7 @@ class GmailDraftReplySkill(SkillBase):
             return SkillResult.failure(f"Error creating draft: {e}")
 
 
-class GmailGetThreadSkill(SkillBase):
+class GmailGetThreadSkill(BlockingSkill):
     """Skill to get full email thread."""
 
     @property
@@ -379,7 +379,7 @@ class GmailGetThreadSkill(SkillBase):
             "required": ["thread_id"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         thread_id = kwargs.get("thread_id", "")
 
         if not thread_id:

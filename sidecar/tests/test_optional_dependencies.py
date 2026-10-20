@@ -16,12 +16,12 @@ BOOT_WITHOUT_EXTRAS = textwrap.dedent(
         sys.modules[blocked] = None
     from fastapi.testclient import TestClient
     import server
-    client = TestClient(server.app)
+    client = TestClient(server.app, base_url="http://127.0.0.1")
     assert client.get("/health").json()["status"] == "ok"
     status = client.get("/google/auth/status").json()
     assert status["connected"] is False and "not installed" in status["error"], status
-    tools = [tool["function"]["name"] for tool in client.get("/skills/tools").json()["tools"]]
-    assert "filesystem__read_file" in tools, tools
+    skills = [skill["name"] for skill in client.get("/skills").json()["skills"]]
+    assert "filesystem.read_file" in skills, skills
     print("booted")
     """
 )

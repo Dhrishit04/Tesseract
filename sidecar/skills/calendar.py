@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from skills.skill_base import SkillBase, SkillResult
+from skills.skill_base import BlockingSkill, SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,11 @@ def _format_event(event: dict) -> dict:
     }
 
 
+def _when(date_time: str, time_zone: str | None) -> dict:
+    """Event time for the API. With no zone, Google rejects a time lacking a UTC offset instead of guessing."""
+    return {"dateTime": date_time, "timeZone": time_zone} if time_zone else {"dateTime": date_time}
+
+
 def _parse_datetime(dt_str: str) -> datetime:
     """Parse ISO datetime string to datetime object."""
     # Handle both dateTime (with timezone) and date (all-day)
@@ -57,7 +62,7 @@ def _parse_datetime(dt_str: str) -> datetime:
         return datetime.fromisoformat(dt_str + "T00:00:00")
 
 
-class CalendarListEventsSkill(SkillBase):
+class CalendarListEventsSkill(BlockingSkill):
     """Skill to list upcoming calendar events."""
 
     @property
@@ -107,7 +112,7 @@ class CalendarListEventsSkill(SkillBase):
             },
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         calendar_id = kwargs.get("calendar_id", "primary")
         time_min = kwargs.get("time_min")
         time_max = kwargs.get("time_max")
@@ -147,7 +152,7 @@ class CalendarListEventsSkill(SkillBase):
             return SkillResult.failure(f"Error listing events: {e}")
 
 
-class CalendarCreateEventSkill(SkillBase):
+class CalendarCreateEventSkill(BlockingSkill):
     """Skill to create a new calendar event."""
 
     @property
@@ -192,8 +197,7 @@ class CalendarCreateEventSkill(SkillBase):
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "Timezone (e.g., 'America/New_York', 'UTC')",
-                    "default": "UTC",
+                    "description": "IANA time zone (e.g., 'America/New_York'). Not needed when start_time and end_time include a UTC offset.",
                 },
                 "attendees": {
                     "type": "array",
@@ -210,14 +214,14 @@ class CalendarCreateEventSkill(SkillBase):
             "required": ["summary", "start_time", "end_time"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         calendar_id = kwargs.get("calendar_id", "primary")
         summary = kwargs.get("summary", "")
         description = kwargs.get("description", "")
         location = kwargs.get("location", "")
         start_time = kwargs.get("start_time", "")
         end_time = kwargs.get("end_time", "")
-        timezone = kwargs.get("timezone", "UTC")
+        timezone = kwargs.get("timezone")
         attendees = kwargs.get("attendees", [])
         send_notifications = kwargs.get("send_notifications", True)
 
@@ -232,14 +236,8 @@ class CalendarCreateEventSkill(SkillBase):
                 "summary": summary,
                 "description": description,
                 "location": location,
-                "start": {
-                    "dateTime": start_time,
-                    "timeZone": timezone,
-                },
-                "end": {
-                    "dateTime": end_time,
-                    "timeZone": timezone,
-                },
+                "start": _when(start_time, timezone),
+                "end": _when(end_time, timezone),
             }
 
             if attendees:
@@ -260,7 +258,7 @@ class CalendarCreateEventSkill(SkillBase):
             return SkillResult.failure(f"Error creating event: {e}")
 
 
-class CalendarUpdateEventSkill(SkillBase):
+class CalendarUpdateEventSkill(BlockingSkill):
     """Skill to update an existing calendar event."""
 
     @property
@@ -323,7 +321,7 @@ class CalendarUpdateEventSkill(SkillBase):
             "required": ["event_id"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         calendar_id = kwargs.get("calendar_id", "primary")
         event_id = kwargs.get("event_id", "")
         send_notifications = kwargs.get("send_notifications", True)
@@ -345,15 +343,13 @@ class CalendarUpdateEventSkill(SkillBase):
             if "location" in kwargs and kwargs["location"] is not None:
                 existing["location"] = kwargs["location"]
             if "start_time" in kwargs and kwargs["start_time"]:
-                existing["start"] = {
-                    "dateTime": kwargs["start_time"],
-                    "timeZone": kwargs.get("timezone", existing.get("start", {}).get("timeZone", "UTC")),
-                }
+                existing["start"] = _when(
+                    kwargs["start_time"], kwargs.get("timezone") or existing.get("start", {}).get("timeZone")
+                )
             if "end_time" in kwargs and kwargs["end_time"]:
-                existing["end"] = {
-                    "dateTime": kwargs["end_time"],
-                    "timeZone": kwargs.get("timezone", existing.get("end", {}).get("timeZone", "UTC")),
-                }
+                existing["end"] = _when(
+                    kwargs["end_time"], kwargs.get("timezone") or existing.get("end", {}).get("timeZone")
+                )
             if "attendees" in kwargs:
                 existing["attendees"] = [{"email": email} for email in kwargs["attendees"]]
 
@@ -373,7 +369,7 @@ class CalendarUpdateEventSkill(SkillBase):
             return SkillResult.failure(f"Error updating event: {e}")
 
 
-class CalendarDeleteEventSkill(SkillBase):
+class CalendarDeleteEventSkill(BlockingSkill):
     """Skill to delete a calendar event."""
 
     @property
@@ -407,7 +403,7 @@ class CalendarDeleteEventSkill(SkillBase):
             "required": ["event_id"],
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         calendar_id = kwargs.get("calendar_id", "primary")
         event_id = kwargs.get("event_id", "")
         send_notifications = kwargs.get("send_notifications", True)
@@ -433,7 +429,7 @@ class CalendarDeleteEventSkill(SkillBase):
             return SkillResult.failure(f"Error deleting event: {e}")
 
 
-class CalendarCheckScheduleSkill(SkillBase):
+class CalendarCheckScheduleSkill(BlockingSkill):
     """Skill to check calendar availability (free/busy)."""
 
     @property
@@ -471,7 +467,7 @@ class CalendarCheckScheduleSkill(SkillBase):
             },
         }
 
-    async def execute(self, **kwargs: Any) -> SkillResult:
+    def run(self, **kwargs: Any) -> SkillResult:
         calendar_ids = kwargs.get("calendar_ids", ["primary"])
         time_min = kwargs.get("time_min")
         time_max = kwargs.get("time_max")

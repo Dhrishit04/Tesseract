@@ -4,12 +4,11 @@ import asyncio
 from typing import Any
 
 from automation.office import get_office_automation
+from settings_store import load_settings
 from skills.skill_base import SkillBase, SkillResult
 
 
 def _office() -> Any:
-    from server import load_settings
-
     settings = load_settings().get("automation", {})
     if not settings.get("automation_enabled", False):
         raise RuntimeError("Automation is disabled in settings")

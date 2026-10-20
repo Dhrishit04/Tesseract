@@ -5,6 +5,7 @@ import platform
 import subprocess
 from typing import Any
 
+from automation.policy import load_automation_policy
 from skills.skill_base import SkillBase, SkillResult
 
 
@@ -36,6 +37,9 @@ class AppLauncherLaunchSkill(SkillBase):
         target = kwargs.get("target", "")
         if not target:
             return SkillResult.failure("Target parameter is required")
+        # shortcut: one switch guards running programs, upgrade to per-call approval in Phase 2.
+        if not load_automation_policy()["automation_enabled"]:
+            return SkillResult.failure("Launching apps is disabled. Turn on automation in Settings to allow it.")
 
         try:
             if platform.system() == "Windows":

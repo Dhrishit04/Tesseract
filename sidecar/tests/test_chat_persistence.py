@@ -44,7 +44,7 @@ class ChatPersistenceTests(unittest.TestCase):
         ]
         for active in self.patches:
             active.start()
-        self.client = TestClient(server.app)
+        self.client = TestClient(server.app, base_url="http://127.0.0.1")
 
     def tearDown(self):
         for active in self.patches:

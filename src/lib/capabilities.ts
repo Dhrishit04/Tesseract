@@ -11,7 +11,7 @@ export interface CapabilityGroup {
 
 export const CAPABILITY_GROUPS: CapabilityGroup[] = [
   { prefix: "filesystem", title: "Files", summary: "Read, write, list and search files inside Tesseract's working folder.", requires: "none" },
-  { prefix: "app_launcher", title: "Apps and windows", summary: "Open apps, files and links with their default program, and switch between open windows.", requires: "none" },
+  { prefix: "app_launcher", title: "Apps and windows", summary: "Open apps, files and links with their default program, and switch between open windows.", requires: "automation" },
   { prefix: "gmail", title: "Gmail", summary: "Read and search your inbox, open threads, draft replies and send email.", requires: "google" },
   { prefix: "calendar", title: "Google Calendar", summary: "List, create, change and delete events, and check when you are free.", requires: "google" },
   { prefix: "web_automation", title: "Web browser", summary: "Open pages in a separate Chromium window, click, type, read content and take screenshots.", requires: "automation" },

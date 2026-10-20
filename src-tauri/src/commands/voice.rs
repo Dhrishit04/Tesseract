@@ -38,45 +38,6 @@ pub async fn get_voice_status() -> Result<VoiceStatus, String> {
 }
 
 #[tauri::command]
-pub async fn start_wake_word(app: tauri::AppHandle) -> Result<VoiceCommandResponse, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post("http://127.0.0.1:8765/voice/wake-word/start")
-        .send()
-        .await
-        .map_err(|e| format!("Sidecar unreachable: {}", e))?;
-
-    let result: VoiceCommandResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
-
-    // Emit event for UI update
-    let _ = app.emit("voice-status-changed", ());
-
-    Ok(result)
-}
-
-#[tauri::command]
-pub async fn stop_wake_word(app: tauri::AppHandle) -> Result<VoiceCommandResponse, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post("http://127.0.0.1:8765/voice/wake-word/stop")
-        .send()
-        .await
-        .map_err(|e| format!("Sidecar unreachable: {}", e))?;
-
-    let result: VoiceCommandResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
-
-    let _ = app.emit("voice-status-changed", ());
-
-    Ok(result)
-}
-
-#[tauri::command]
 pub async fn start_stt_recording(app: tauri::AppHandle) -> Result<VoiceCommandResponse, String> {
     let client = reqwest::Client::new();
     let resp = client
@@ -100,26 +61,6 @@ pub async fn stop_stt_recording(app: tauri::AppHandle) -> Result<VoiceCommandRes
     let client = reqwest::Client::new();
     let resp = client
         .post("http://127.0.0.1:8765/voice/stt/stop")
-        .send()
-        .await
-        .map_err(|e| format!("Sidecar unreachable: {}", e))?;
-
-    let result: VoiceCommandResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
-
-    let _ = app.emit("voice-status-changed", ());
-
-    Ok(result)
-}
-
-#[tauri::command]
-pub async fn speak_text(text: String, app: tauri::AppHandle) -> Result<VoiceCommandResponse, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post("http://127.0.0.1:8765/voice/tts/speak")
-        .json(&serde_json::json!({ "text": text }))
         .send()
         .await
         .map_err(|e| format!("Sidecar unreachable: {}", e))?;

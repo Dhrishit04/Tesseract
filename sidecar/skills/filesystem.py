@@ -156,10 +156,10 @@ class FilesystemWriteFileSkill(SkillBase):
             return SkillResult.failure("Path parameter is required")
 
         try:
-            path = Path(path_str).resolve()
-            cwd = Path.cwd().resolve()
-            if not str(path).startswith(str(cwd)):
-                return SkillResult.failure(f"Access denied: path outside workspace: {path}")
+            path, error = _workspace_path(path_str)
+            if error:
+                return SkillResult.failure(error)
+            assert path is not None
 
             # Create parent directories if they don't exist
             path.parent.mkdir(parents=True, exist_ok=True)

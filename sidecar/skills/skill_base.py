@@ -1,5 +1,6 @@
 """Abstract base class for Tesseract skills."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -81,3 +82,14 @@ class SkillBase(ABC):
                 "parameters": self.parameters,
             },
         }
+
+
+class BlockingSkill(SkillBase):
+    """A skill built on a blocking client library: `run` happens off the event loop so other requests keep flowing."""
+
+    @abstractmethod
+    def run(self, **kwargs: Any) -> SkillResult:
+        pass
+
+    async def execute(self, **kwargs: Any) -> SkillResult:
+        return await asyncio.to_thread(self.run, **kwargs)

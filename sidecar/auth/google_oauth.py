@@ -204,7 +204,10 @@ class GoogleOAuthManager:
             "expiry": self._credentials.expiry.isoformat() if self._credentials.expiry else None,
         }
         encrypted = self._encrypt(json.dumps(token_data).encode())
-        self._token_file.write_bytes(encrypted)
+        # Write then rename so a crash mid-save never leaves a half-written token file.
+        temporary = self._token_file.with_name(f"{TOKEN_FILENAME}.tmp")
+        temporary.write_bytes(encrypted)
+        os.replace(temporary, self._token_file)
 
     def load_credentials(self) -> bool:
         """Load credentials from the encrypted token file."""

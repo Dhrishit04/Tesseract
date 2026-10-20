@@ -1,5 +1,6 @@
 """Integration tests for the chat endpoints against a mocked OpenRouter API."""
 
+import asyncio
 import json
 import re
 import unittest
@@ -77,7 +78,7 @@ class ChatEndpointTests(unittest.TestCase):
         ]
         for active_patch in self.patches:
             active_patch.start()
-        self.client = TestClient(server.app)
+        self.client = TestClient(server.app, base_url="http://127.0.0.1")
 
     def tearDown(self):
         for active_patch in self.patches:
@@ -133,17 +134,24 @@ class ChatEndpointTests(unittest.TestCase):
         self.assertEqual(followup[-1]["tool_call_id"], "call_1")
         self.assertEqual(json.loads(followup[-1]["content"])["data"], {"echo": "ping"})
 
-    def test_non_streaming_chat_runs_tools(self):
+    def test_voice_requests_run_tools_without_streaming(self):
         first = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
             {"id": "call_9", "type": "function", "function": {"name": "test__echo", "arguments": '{"text": "x"}'}}
         ]}}]}
         second = {"choices": [{"message": {"role": "assistant", "content": "finished"}}]}
         self.responses.extend([httpx.Response(200, json=first), httpx.Response(200, json=second)])
 
-        response = self.client.post("/chat", json={"message": "go"})
-
-        self.assertEqual(response.json(), {"response": "finished"})
+        self.assertEqual(asyncio.run(server._voice_llm_handler("go")), "finished")
         self.assertEqual(EchoSkill.calls, [{"text": "x"}])
+
+    def test_model_is_told_the_current_local_time(self):
+        self.responses.append(httpx.Response(200, content=sse(delta(content="ok"))))
+
+        self.client.post("/chat/stream", json={"message": "book 3pm tomorrow"})
+
+        system = self.requests[0]["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn("current local date and time", system["content"])
 
 
 if __name__ == "__main__":
@@ -172,7 +180,7 @@ class ToolPreviewTests(unittest.TestCase):
         client = OpenRouterClient(api_key="k", transport=httpx.MockTransport(lambda _r: replies.pop(0)))
         with patch.object(server, "get_client", return_value=client), \
                 patch.object(server, "get_skill_registry", return_value=registry):
-            events = read_events(TestClient(server.app).post("/chat/stream", json={"message": "snap"}))
+            events = read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "snap"}))
 
         done = [e["tool"] for e in events if isinstance(e, dict) and e.get("tool", {}).get("status") == "done"]
         self.assertEqual(done[0]["preview"], "data:image/png;base64,iVBORw0KGgo=")
@@ -194,7 +202,7 @@ class ToolPreviewTests(unittest.TestCase):
 
         client = OpenRouterClient(api_key="k", transport=httpx.MockTransport(handler))
         with patch.object(server, "get_client", return_value=client),                 patch.object(server, "get_skill_registry", return_value=registry):
-            read_events(TestClient(server.app).post("/chat/stream", json={"message": "snap"}))
+            read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "snap"}))
 
         tool_message = sent[1]["messages"][-1]
         self.assertNotIn("iVBORw0KGgo=", tool_message["content"])
@@ -241,7 +249,7 @@ class ReviewFixTests(unittest.TestCase):
             httpx.Response(200, content=sse(delta(content="sorry"))),
         ])
 
-        events = read_events(TestClient(server.app).post("/chat/stream", json={"message": "echo"}))
+        events = read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "echo"}))
 
         self.assertEqual(EchoSkill.calls, [])
         done = [e["tool"] for e in events if isinstance(e, dict) and e.get("tool", {}).get("status") == "error"]
@@ -255,20 +263,22 @@ class ReviewFixTests(unittest.TestCase):
         profile = {"profile": {"name": "Dhrishit", "address_as": "boss", "about": "Final-year student"}}
 
         with patch.object(server, "load_settings", return_value=profile):
-            read_events(TestClient(server.app).post("/chat/stream", json={"message": "hi"}))
+            read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "hi"}))
 
         system = self.requests[0]["messages"][0]
         self.assertEqual(system["role"], "system")
         for expected in ("Dhrishit", "boss", "Final-year student"):
             self.assertIn(expected, system["content"])
 
-    def test_no_profile_means_no_system_message(self):
+    def test_no_profile_means_only_the_time_in_the_system_message(self):
         self.responses.append(httpx.Response(200, content=sse(delta(content="hi"))))
 
         with patch.object(server, "load_settings", return_value={}):
-            read_events(TestClient(server.app).post("/chat/stream", json={"message": "hi"}))
+            read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "hi"}))
 
-        self.assertEqual(self.requests[0]["messages"][0]["role"], "user")
+        system = self.requests[0]["messages"][0]["content"]
+        self.assertIn("current local date and time", system)
+        self.assertNotIn("called", system)
 
 
 class StartupTests(unittest.TestCase):
@@ -284,7 +294,7 @@ class StartupTests(unittest.TestCase):
 
         with patch.object(server, "get_oauth_manager", return_value=SlowOAuth()):
             started = clock.monotonic()
-            with TestClient(server.app) as client:
+            with TestClient(server.app, base_url="http://127.0.0.1") as client:
                 elapsed = clock.monotonic() - started
                 self.assertEqual(client.get("/health").status_code, 200)
 

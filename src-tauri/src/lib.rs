@@ -130,19 +130,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
-            commands::toggle_window,
-            commands::check_sidecar_health,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::reset_settings,
             commands::settings::get_config_path,
             commands::voice::get_voice_status,
-            commands::voice::start_wake_word,
-            commands::voice::stop_wake_word,
             commands::voice::start_stt_recording,
             commands::voice::stop_stt_recording,
-            commands::voice::speak_text,
             commands::voice::stop_tts,
             commands::voice::start_voice_pipeline,
             commands::voice::stop_voice_pipeline,

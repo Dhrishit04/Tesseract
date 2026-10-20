@@ -154,7 +154,7 @@ class GoogleOAuthManagerTests(unittest.TestCase):
 
 class OAuthCallbackEndpointTests(unittest.TestCase):
     def test_error_callback_renders_page_instead_of_redirect_loop(self):
-        client = TestClient(server.app)
+        client = TestClient(server.app, base_url="http://127.0.0.1")
 
         response = client.get("/oauth/callback?error=access_denied", follow_redirects=False)
 

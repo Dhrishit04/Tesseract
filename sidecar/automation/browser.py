@@ -53,6 +53,9 @@ class WebAutomation:
         """Navigate to a URL."""
         if not self._page:
             raise RuntimeError("Browser not started. Use async context manager.")
+        # file:// and similar would let page text expose local files the file tools refuse.
+        if not url.lower().startswith(("http://", "https://")):
+            raise ValueError(f"Only http:// and https:// URLs can be opened: {url}")
         await self._page.goto(url, wait_until=wait_until)
         return {"url": self._page.url, "title": await self._page.title()}
 

@@ -103,6 +103,7 @@ uv pip install -e ".[voice]"
 
 Automation is off by default. Turn it on in **Settings > Automation** to let the model:
 
+- open apps, files and links with their default program
 - drive a separate Chromium window (Playwright), hidden or visible
 - read and operate desktop apps through Windows UI Automation. When an app does not expose a control, Tesseract falls back to OCR (needs [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) and the OCR setting). If both fail, it tells you what to do instead.
 - read and edit Word, Excel and PowerPoint files, optionally through installed Office (COM)

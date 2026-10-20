@@ -84,7 +84,8 @@ class SkillRegistry:
 
         # Find all SkillBase subclasses in the module
         for name, obj in inspect.getmembers(module, inspect.isclass):
-            if obj is SkillBase:
+            # Imported names (SkillBase, BlockingSkill) are not this module's skills; a broken local one still logs below.
+            if obj.__module__ != module.__name__:
                 continue
             if issubclass(obj, SkillBase):
                 try:
