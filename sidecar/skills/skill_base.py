@@ -3,7 +3,7 @@
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 
 @dataclass
@@ -30,7 +30,17 @@ class SkillBase(ABC):
     - description: human-readable description for the LLM
     - parameters: JSON schema describing the skill's parameters
     - execute: the actual implementation
+
+    Skills that only read declare kind = "read"; anything else asks the owner first.
     """
+
+    kind: ClassVar[Literal["read", "change"]] = "change"
+    irreversible: ClassVar[bool] = False
+    approval_title: ClassVar[str] = ""  # imperative label for the approval card, e.g. "Send an email"
+
+    def approval_summary(self, arguments: dict) -> str:
+        """One line telling the owner what this call would do."""
+        return self.description
 
     @property
     @abstractmethod

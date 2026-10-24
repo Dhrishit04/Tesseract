@@ -17,6 +17,9 @@ def _get_orchestrator():
 class WebAutomationNavigateSkill(SkillBase):
     """Skill to navigate to a URL in the browser."""
 
+    # A change: opening a URL can submit a GET form.
+    approval_title = "Open a web page"
+
     @property
     def name(self) -> str:
         return "web_automation.navigate"
@@ -73,6 +76,8 @@ class WebAutomationNavigateSkill(SkillBase):
 class WebAutomationClickSkill(SkillBase):
     """Skill to click an element on the page."""
 
+    approval_title = "Click on a web page"
+
     @property
     def name(self) -> str:
         return "web_automation.click"
@@ -113,6 +118,8 @@ class WebAutomationClickSkill(SkillBase):
 
 class WebAutomationTypeSkill(SkillBase):
     """Skill to type text into a form field."""
+
+    approval_title = "Type on a web page"
 
     @property
     def name(self) -> str:
@@ -159,6 +166,8 @@ class WebAutomationTypeSkill(SkillBase):
 
 class WebAutomationExtractSkill(SkillBase):
     """Skill to extract text/content from page elements."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:
@@ -207,6 +216,8 @@ class WebAutomationExtractSkill(SkillBase):
 class WebAutomationScreenshotSkill(SkillBase):
     """Skill to take a screenshot of the current page."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "web_automation.screenshot"
@@ -245,6 +256,8 @@ class WebAutomationScreenshotSkill(SkillBase):
 class WebAutomationGetContentSkill(SkillBase):
     """Skill to get page content for LLM analysis."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "web_automation.get_page_content"
@@ -274,6 +287,8 @@ class WebAutomationGetContentSkill(SkillBase):
 
 class WebAutomationWaitForSkill(SkillBase):
     """Skill to wait for an element to appear."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:
@@ -322,6 +337,9 @@ class WebAutomationWaitForSkill(SkillBase):
 
 class WebAutomationCloseSkill(SkillBase):
     """Skill to close the web automation browser session."""
+
+    # A read: it only ends Tesseract's own browser session.
+    kind = "read"
 
     @property
     def name(self) -> str:

@@ -101,14 +101,23 @@ uv pip install -e ".[voice]"
 
 ## Automation
 
-Automation is off by default. Turn it on in **Settings > Automation** to let the model:
+Automation is off by default. Turn it on in **Settings > Automation** to give the model these tools. It still asks before each change (see [Approvals](#approvals)):
 
-- open apps, files and links with their default program
 - drive a separate Chromium window (Playwright), hidden or visible
 - read and operate desktop apps through Windows UI Automation. When an app does not expose a control, Tesseract falls back to OCR (needs [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) and the OCR setting). If both fail, it tells you what to do instead.
 - read and edit Word, Excel and PowerPoint files, optionally through installed Office (COM)
 
 File access, for both the filesystem skill and Office, is limited to the sidecar's working directory.
+
+## Approvals
+
+Tesseract reads freely (files, email, calendar, web pages, windows) but asks before it changes anything: writing a file, sending an email, creating or deleting an event, opening an app, clicking or typing. The chat shows a card with what it wants to do and three buttons: **Allow**, **Always allow this** and **Don't allow**. Sending an email and deleting an event are marked **Can't be undone**.
+
+- You can also answer in your own words in the message box ("yes go ahead", "nah, wait"). Anything unclear counts as not allowed, and the model gets your words.
+- A card nobody answers within 10 minutes counts as not allowed. Stopping the reply cancels it.
+- **Settings > Permissions** lists everything you chose **Always allow this** for, with **Revoke** buttons. The list is stored in `~/.tesseract/permissions.json`.
+- Opening apps, files and links does not need automation turned on, but always asks first (unless always allowed).
+- Voice can only read for now: a spoken request that needs a change is refused, and the model asks you to approve it in the chat window. Spoken approvals come with the voice update.
 
 ## Development
 

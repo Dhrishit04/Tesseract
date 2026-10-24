@@ -21,6 +21,12 @@ export const chatVariants: Variants = {
   exit: { opacity: 0, y: -8, transition: { duration: DURATION.micro, ease: EASE_OUT } },
 };
 
+/** An approval card rising into the conversation. */
+export const approvalVariants: Variants = {
+  initial: { opacity: 0, y: 14, scale: 0.98 },
+  animate: { opacity: 1, y: 0, scale: 1, transition: { duration: DURATION.view, ease: EASE_OUT } },
+};
+
 /** Opacity-only versions used when the person asked the OS for less motion. */
 export const calmVariants: Variants = {
   initial: { opacity: 0 },

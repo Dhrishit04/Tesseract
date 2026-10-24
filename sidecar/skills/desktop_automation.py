@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 class DesktopAutomationFindWindowSkill(SkillBase):
     """Skill to find and activate a window by title, class, or process name."""
 
+    # A change: finding a window also brings it to the front.
+    approval_title = "Find and switch to a window"
+
     @property
     def name(self) -> str:
         return "desktop_automation.find_window"
@@ -69,6 +72,8 @@ class DesktopAutomationFindWindowSkill(SkillBase):
 class DesktopAutomationFocusWindowSkill(SkillBase):
     """Skill to focus a window by handle."""
 
+    approval_title = "Bring a window to the front"
+
     @property
     def name(self) -> str:
         return "desktop_automation.focus_window"
@@ -108,6 +113,8 @@ class DesktopAutomationFocusWindowSkill(SkillBase):
 
 class DesktopAutomationGetElementsSkill(SkillBase):
     """Skill to get the accessibility tree for the current window."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:
@@ -155,6 +162,8 @@ class DesktopAutomationGetElementsSkill(SkillBase):
 
 class DesktopAutomationClickSkill(SkillBase):
     """Skill to click a UI element by name, type, automation_id, or coordinates."""
+
+    approval_title = "Click in an app"
 
     @property
     def name(self) -> str:
@@ -222,6 +231,8 @@ class DesktopAutomationClickSkill(SkillBase):
 
 class DesktopAutomationTypeSkill(SkillBase):
     """Skill to type text into a UI element."""
+
+    approval_title = "Type in an app"
 
     @property
     def name(self) -> str:
@@ -300,6 +311,8 @@ class DesktopAutomationTypeSkill(SkillBase):
 class DesktopAutomationGetTextSkill(SkillBase):
     """Skill to get text from a UI element."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "desktop_automation.get_text"
@@ -358,6 +371,8 @@ class DesktopAutomationGetTextSkill(SkillBase):
 class DesktopAutomationScreenshotSkill(SkillBase):
     """Skill to take a screenshot of the screen, window, or region."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "desktop_automation.screenshot"
@@ -406,6 +421,8 @@ class DesktopAutomationScreenshotSkill(SkillBase):
 
 class DesktopAutomationOCRSkill(SkillBase):
     """Skill to extract text from screen region using OCR."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:
@@ -457,6 +474,8 @@ class DesktopAutomationOCRSkill(SkillBase):
 
 class DesktopAutomationResizeWindowSkill(SkillBase):
     """Skill to resize a window."""
+
+    approval_title = "Resize a window"
 
     @property
     def name(self) -> str:
@@ -512,6 +531,8 @@ class DesktopAutomationResizeWindowSkill(SkillBase):
 class DesktopAutomationListWindowsSkill(SkillBase):
     """Skill to list all visible windows."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "desktop_automation.list_windows"
@@ -551,6 +572,9 @@ class DesktopAutomationListWindowsSkill(SkillBase):
 
 class DesktopAutomationCloseSkill(SkillBase):
     """Skill to close the desktop automation session."""
+
+    # A read: it only ends Tesseract's own desktop session.
+    kind = "read"
 
     @property
     def name(self) -> str:

@@ -20,6 +20,8 @@ def _workspace_path(path_str: str) -> tuple[Path | None, str | None]:
 class FilesystemReadFileSkill(SkillBase):
     """Skill to read a file from the filesystem."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "filesystem.read_file"
@@ -66,6 +68,8 @@ class FilesystemReadFileSkill(SkillBase):
 
 class FilesystemListDirSkill(SkillBase):
     """Skill to list a directory's contents."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:
@@ -123,6 +127,11 @@ class FilesystemListDirSkill(SkillBase):
 class FilesystemWriteFileSkill(SkillBase):
     """Skill to write a file to the filesystem."""
 
+    approval_title = "Write a file"
+
+    def approval_summary(self, arguments: dict) -> str:
+        return f"Write {len(str(arguments.get('content', '')))} characters to {arguments.get('path', '')}"
+
     @property
     def name(self) -> str:
         return "filesystem.write_file"
@@ -172,6 +181,8 @@ class FilesystemWriteFileSkill(SkillBase):
 
 class FilesystemSearchSkill(SkillBase):
     """Skill to search for files matching a pattern."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:

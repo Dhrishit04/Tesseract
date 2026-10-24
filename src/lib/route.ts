@@ -1,6 +1,6 @@
 // Hash routes: #/chat/<id>, #/chat/new, #/settings/<section>, #/settings/about/<terms|privacy>.
 
-export const SETTINGS_SECTIONS = ["profile", "appearance", "models", "google", "voice", "automation", "startup", "about"] as const;
+export const SETTINGS_SECTIONS = ["profile", "appearance", "models", "permissions", "google", "voice", "automation", "startup", "about"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 export type LegalKind = "terms" | "privacy";
 

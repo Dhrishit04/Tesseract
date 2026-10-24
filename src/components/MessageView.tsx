@@ -3,6 +3,8 @@ import Markdown, { Components } from "react-markdown";
 import { Message, ToolActivity } from "../hooks/useChat";
 import { toolLabel } from "../lib/capabilities";
 import { openExternal } from "../lib/sidecar";
+import type { ApprovalDecision } from "../services/api";
+import { ApprovalCard } from "./ApprovalCard";
 
 // Links in answers open in the system browser; navigating the app webview would lose the session.
 const markdownComponents: Components = {
@@ -23,6 +25,7 @@ const STATUS_TEXT: Record<ToolActivity["status"], string> = {
   running: "Working",
   done: "Done",
   error: "Failed",
+  declined: "Not allowed",
 };
 
 function ToolRow({ tool }: Readonly<{ tool: ToolActivity }>) {
@@ -40,9 +43,10 @@ interface MessageViewProps {
   message: Message;
   isStreaming: boolean;
   onOpenSettings: () => void;
+  onAnswer: (approvalId: string, decision: ApprovalDecision) => void;
 }
 
-function MessageViewInner({ message, isStreaming, onOpenSettings }: Readonly<MessageViewProps>) {
+function MessageViewInner({ message, isStreaming, onOpenSettings, onAnswer }: Readonly<MessageViewProps>) {
   if (message.role === "user") {
     return (
       <article className="message message-user" aria-label="You said">
@@ -51,7 +55,7 @@ function MessageViewInner({ message, isStreaming, onOpenSettings }: Readonly<Mes
     );
   }
 
-  const waiting = isStreaming && !message.content && message.tools.length === 0 && !message.error;
+  const waiting = isStreaming && !message.content && message.tools.length === 0 && message.approvals.length === 0 && !message.error;
   return (
     <article className="message message-assistant" aria-label="Tesseract replied" aria-busy={isStreaming}>
       {message.tools.length > 0 && (
@@ -59,6 +63,7 @@ function MessageViewInner({ message, isStreaming, onOpenSettings }: Readonly<Mes
           {message.tools.map((tool) => <ToolRow key={tool.id} tool={tool} />)}
         </ul>
       )}
+      {message.approvals.map((approval) => <ApprovalCard key={approval.id} approval={approval} onAnswer={onAnswer} />)}
       {waiting && <p className="thinking">Thinking</p>}
       {message.content && (
         <div className="markdown">

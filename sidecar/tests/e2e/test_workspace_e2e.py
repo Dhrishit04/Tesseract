@@ -372,6 +372,95 @@ class WorkspaceEndToEndTests(unittest.TestCase):
         page.emulate_media(color_scheme="light")
         page.wait_for_function("() => document.documentElement.dataset.theme === 'light'", timeout=2000)
 
+    # --- Approvals: "save a note" makes the mock model call filesystem__write_file on approved.txt.
+
+    def approved_file(self) -> Path:
+        return Path(self.workdir.name, "approved.txt")
+
+    def ask_to_save(self, page, prompt: str, route: str = "#/chat/new"):
+        """Send a prompt that needs a write and return its approval card."""
+        self.approved_file().unlink(missing_ok=True)
+        page.goto(f"{UI}/{route}")
+        page.get_by_label("Message Tesseract").fill(prompt)
+        page.keyboard.press("Enter")
+        card = page.get_by_role("region", name="Approval needed: Write a file")
+        card.wait_for()
+        return card
+
+    def test_change_tool_asks_and_allow_writes_the_file(self):
+        page = self.page
+        card = self.ask_to_save(page, "Please save a note now")
+        self.assertTrue(card.locator("dd", has_text="approved.txt").is_visible())
+
+        card.get_by_role("button", name="Allow", exact=True).click()
+
+        card.get_by_role("status").filter(has_text="Allowed").wait_for()
+        page.get_by_text("Saved approved.txt.").wait_for()
+        self.assertEqual(self.approved_file().read_text(encoding="utf-8"), "hello from the e2e test")
+
+    def test_dont_allow_leaves_the_file_alone(self):
+        page = self.page
+        card = self.ask_to_save(page, "Please save a note, then I will refuse")
+
+        card.get_by_role("button", name="Don't allow").click()
+
+        page.get_by_role("list", name="What Tesseract did").get_by_text("Not allowed").wait_for()
+        page.get_by_text("Okay, I left it alone.").wait_for()
+        self.assertFalse(self.approved_file().exists())
+
+    def test_typed_yes_answers_the_card(self):
+        page = self.page
+        card = self.ask_to_save(page, "Please save a note, I will type yes")
+        self.assertTrue(page.get_by_role("button", name="Reply").is_visible())
+
+        page.get_by_label("Message Tesseract").fill("yes go ahead")
+        page.keyboard.press("Enter")
+
+        card.get_by_role("status").filter(has_text="Allowed from your reply").wait_for()
+        page.get_by_role("article", name="You said").filter(has_text="yes go ahead").wait_for()
+        page.get_by_text("Saved approved.txt.").wait_for()
+        self.assertTrue(self.approved_file().exists())
+
+    def test_always_allow_shows_in_permissions_and_revoke_restores_asking(self):
+        page = self.page
+        card = self.ask_to_save(page, "Please save a note and always allow it")
+        card.get_by_role("button", name="Always allow this").click()
+        page.get_by_text("Saved approved.txt.").wait_for()
+
+        page.goto(f"{UI}/#/settings/permissions")
+        trusted = page.get_by_role("list", name="Always allowed")
+        trusted.get_by_text("Write a file").wait_for()
+
+        self.approved_file().unlink()
+        page.goto(f"{UI}/#/chat/new")
+        page.get_by_label("Message Tesseract").fill("Please save a note without asking")
+        page.keyboard.press("Enter")
+        page.get_by_text("Saved approved.txt.").wait_for()
+        self.assertEqual(page.get_by_role("region", name="Approval needed: Write a file").count(), 0)
+        self.assertTrue(self.approved_file().exists())
+
+        page.goto(f"{UI}/#/settings/permissions")
+        page.get_by_role("button", name="Revoke Write a file").click()
+        page.get_by_text("Nothing is always allowed.").wait_for()
+
+        card = self.ask_to_save(page, "Please save a note after revoking")
+        card.get_by_role("button", name="Don't allow").click()
+        page.get_by_text("Okay, I left it alone.").wait_for()
+
+    def test_pending_card_survives_visiting_settings(self):
+        page = self.page
+        self.ask_to_save(page, "Please save a note across settings")
+        page.wait_for_url("**/#/chat/*")
+
+        page.get_by_role("link", name="Settings", exact=True).click()
+        page.get_by_role("heading", name="Profile").wait_for()
+        page.go_back()  # the sidebar shows the chat's title only once the turn is saved
+
+        card = page.get_by_role("region", name="Approval needed: Write a file")
+        card.get_by_role("button", name="Allow", exact=True).click()
+        page.get_by_text("Saved approved.txt.").wait_for()
+        self.assertTrue(self.approved_file().exists())
+
     def test_profile_saves_to_settings_file(self):
         page = self.page
         page.goto(f"{UI}/#/settings/profile")

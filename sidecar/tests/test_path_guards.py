@@ -6,7 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from automation.browser import WebAutomation
 from skills.app_launcher import AppLauncherLaunchSkill
@@ -57,16 +57,9 @@ class BrowserGuardTests(unittest.TestCase):
 
 
 class AppLauncherGuardTests(unittest.TestCase):
-    def test_launch_refused_while_automation_disabled(self):
-        disabled = {"automation_enabled": False, "ocr_enabled": False}
-        with patch("skills.app_launcher.load_automation_policy", return_value=disabled), \
-                patch("skills.app_launcher.os.startfile", create=True) as startfile, \
-                patch("skills.app_launcher.subprocess.Popen") as popen:
-            result = asyncio.run(AppLauncherLaunchSkill().execute(target="C:/Downloads/invoice.exe"))
-
-        self.assertFalse(result.success)
-        startfile.assert_not_called()
-        popen.assert_not_called()
+    def test_launch_asks_the_owner_first(self):
+        # Launching a program is a change, so the chat loop asks before it runs.
+        self.assertEqual(AppLauncherLaunchSkill.kind, "change")
 
 
 class GmailBodyTests(unittest.TestCase):

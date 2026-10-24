@@ -25,16 +25,20 @@ def load_settings() -> dict:
     return settings if isinstance(settings, dict) else {}
 
 
-def save_settings(settings: dict) -> None:
-    """Persist settings atomically so an interrupted write never corrupts the file."""
-    path = settings_path()
+def write_json_atomic(path: str, data) -> None:
+    """Write JSON so an interrupted write never corrupts the file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary_path = f"{path}.tmp"
-    with open(temporary_path, "w", encoding="utf-8") as settings_file:
-        json.dump(settings, settings_file, indent=2)
-        settings_file.flush()
-        os.fsync(settings_file.fileno())
+    with open(temporary_path, "w", encoding="utf-8") as json_file:
+        json.dump(data, json_file, indent=2)
+        json_file.flush()
+        os.fsync(json_file.fileno())
     os.replace(temporary_path, path)
+
+
+def save_settings(settings: dict) -> None:
+    """Persist settings atomically."""
+    write_json_atomic(settings_path(), settings)
 
 
 def update_section(section: str, values: dict) -> dict:

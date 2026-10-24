@@ -1,6 +1,6 @@
 // Chat, model and capability requests to the Python sidecar.
 
-import { SIDECAR_URL, SidecarError, sidecarJson } from "../lib/sidecar";
+import { SIDECAR_URL, SidecarError, postJson, sidecarJson } from "../lib/sidecar";
 
 export interface HealthStatus {
   status: string;
@@ -17,7 +17,7 @@ export interface SkillInfo {
   description: string;
 }
 
-export type ToolStatus = "running" | "done" | "error";
+export type ToolStatus = "running" | "done" | "error" | "declined";
 
 export interface ToolEvent {
   name: string;
@@ -26,10 +26,32 @@ export interface ToolEvent {
   preview?: string;
 }
 
+/** A change Tesseract wants to make, waiting for the owner's answer. */
+export interface ApprovalRequest {
+  id: string;
+  tool: string;
+  title: string;
+  summary: string;
+  details: Record<string, unknown>;
+  irreversible: boolean;
+}
+
+export type ApprovalDecision = "allow" | "always" | "deny";
+
+export interface ApprovalResolution {
+  id: string;
+  decision: ApprovalDecision | "other";
+  via: "button" | "reply" | "timeout";
+  /** Present only when the owner answered in their own words. */
+  reply?: string;
+}
+
 /** One event from /chat/stream. */
 export type ChatEvent =
   | { kind: "content"; text: string }
   | { kind: "tool"; tool: ToolEvent }
+  | { kind: "approval"; approval: ApprovalRequest }
+  | { kind: "approval_resolved"; resolution: ApprovalResolution }
   | { kind: "error"; message: string; code?: string };
 
 export async function checkSidecarHealth(): Promise<HealthStatus> {
@@ -46,7 +68,7 @@ export async function listSkills(): Promise<SkillInfo[]> {
   return data.skills ?? [];
 }
 
-function parseEvent(payload: string): ChatEvent | null {
+export function parseEvent(payload: string): ChatEvent | null {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(payload);
@@ -58,7 +80,20 @@ function parseEvent(payload: string): ChatEvent | null {
   }
   if (typeof parsed.content === "string") return { kind: "content", text: parsed.content };
   if (parsed.tool) return { kind: "tool", tool: parsed.tool as ToolEvent };
+  if (parsed.approval) return { kind: "approval", approval: parsed.approval as ApprovalRequest };
+  if (parsed.approval_resolved) return { kind: "approval_resolved", resolution: parsed.approval_resolved as ApprovalResolution };
   return null;
+}
+
+/** Answer an approval card with a button. A 404 means the request already ended. */
+export async function answerApproval(id: string, decision: ApprovalDecision): Promise<void> {
+  await postJson(`/chat/approvals/${encodeURIComponent(id)}`, { decision });
+}
+
+/** Answer an approval card in the owner's own words; returns how the reply was read. */
+export async function replyToApproval(id: string, text: string): Promise<ApprovalResolution["decision"]> {
+  const path = `/chat/approvals/${encodeURIComponent(id)}/reply`;
+  return (await postJson<{ decision: ApprovalResolution["decision"] }>(path, { text })).decision;
 }
 
 /** Dispatch complete SSE lines. Returns true once the [DONE] marker arrives. */

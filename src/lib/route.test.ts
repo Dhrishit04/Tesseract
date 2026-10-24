@@ -10,6 +10,7 @@ describe("parseRoute", () => {
   it("reads settings sections and legal pages under About", () => {
     expect(parseRoute("#/settings")).toEqual({ view: "settings", section: "profile", legal: null });
     expect(parseRoute("#/settings/voice")).toEqual({ view: "settings", section: "voice", legal: null });
+    expect(parseRoute("#/settings/permissions")).toEqual({ view: "settings", section: "permissions", legal: null });
     expect(parseRoute("#/settings/about/privacy")).toEqual({ view: "settings", section: "about", legal: "privacy" });
   });
 

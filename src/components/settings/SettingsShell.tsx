@@ -16,12 +16,14 @@ import { LegalPage } from "../LegalPage";
 import { StartupSection } from "../StartupSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSection";
+import { PermissionsSection } from "./PermissionsSection";
 import { AutomationSection, ModelsSection, ProfileSection, VoiceSection, validateSettings } from "./formSections";
 
 const SECTIONS: { id: SectionId; label: string; desktopOnly?: boolean }[] = [
   { id: "profile", label: "Profile" },
   { id: "appearance", label: "Appearance" },
   { id: "models", label: "Models & accounts" },
+  { id: "permissions", label: "Permissions" },
   { id: "google", label: "Google account" },
   { id: "voice", label: "Voice" },
   { id: "automation", label: "Automation" },
@@ -160,6 +162,7 @@ export function SettingsShell({ section, legal, sidecar, theme, onThemeChange }:
         {section === "profile" && <ProfileSection {...formProps} />}
         {section === "appearance" && <AppearanceSection preference={theme} onChange={changeTheme} />}
         {section === "models" && <ModelsSection {...formProps} />}
+        {section === "permissions" && <PermissionsSection />}
         {section === "google" && <GoogleAccountSection google={settings.google} onChange={(google) => update({ google })} />}
         {section === "voice" && <VoiceSection {...formProps} />}
         {section === "automation" && <AutomationSection {...formProps} />}

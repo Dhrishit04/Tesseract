@@ -2,14 +2,23 @@
 
 import json
 import logging
+from contextlib import aclosing
 from typing import Any, AsyncGenerator
 
 from llm.openrouter import DEFAULT_MODEL, OpenRouterClient
+from permissions import ApprovalBroker, describe_approval, load_trusted, trust
 from skills.skill_base import SkillResult
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_TURNS = 10
+
+# What the model is told when a change tool did not run.
+DECLINED = "The owner did not allow this action, so nothing was done. Do not try it again unless they ask."
+DECLINED_WITH_REPLY = "The owner did not allow this action and said: \"{reply}\". Nothing was done; follow what they said."
+TIMED_OUT = "The owner did not answer within 10 minutes, so nothing was done."
+NEEDS_CHAT = ("This action needs the owner's approval, which can only be given in the Tesseract chat window. "
+              "Nothing was done; ask them to request it there.")
 
 
 def _merge_tool_call_deltas(pending: list[dict], deltas: list[dict]) -> None:
@@ -46,6 +55,54 @@ def _for_model(data: Any) -> Any:
     return data
 
 
+def _tool_message(call: dict, result: SkillResult) -> dict:
+    return {
+        "role": "tool",
+        "tool_call_id": call.get("id", ""),
+        "name": call.get("function", {}).get("name", ""),
+        "content": json.dumps({"success": result.success, "data": _for_model(result.data), "error": result.error}, default=str),
+    }
+
+
+def _gated_skill(registry, call: dict):
+    """The skill and arguments of a call that must be approved first, or None when it may just run."""
+    skill = registry.get_skill(registry.resolve_skill_name(call.get("function", {}).get("name", "")))
+    arguments = _parse_arguments(call.get("function", {}).get("arguments"))
+    # Unknown tools and bad arguments fail in _execute_tool_call without running anything.
+    if skill is None or arguments is None or skill.kind == "read" or skill.name in load_trusted():
+        return None
+    return skill, arguments
+
+
+def _refusal(resolved: dict) -> str | None:
+    """Tool error for the model when an approval_resolved event means "don't run"; None to run."""
+    if resolved["decision"] in ("allow", "always"):
+        return None
+    if resolved["via"] == "timeout":
+        return TIMED_OUT
+    if resolved["decision"] == "other" and resolved.get("reply"):
+        return DECLINED_WITH_REPLY.format(reply=resolved["reply"])
+    return DECLINED
+
+
+async def _ask(approvals: ApprovalBroker, chat_id, model: str, skill, arguments: dict) -> AsyncGenerator[dict, None]:
+    """Show an approval card and wait for the owner; the last event is approval_resolved."""
+    title, summary, details = describe_approval(skill, arguments)
+    request = approvals.open(chat_id=chat_id, tool=skill.name, title=title, summary=summary,
+                             details=details, irreversible=skill.irreversible, model=model)
+    try:
+        yield {"approval": request.public()}
+        decision = await approvals.wait(request.id)
+    finally:
+        approvals.discard(request.id)  # the stream may close before wait() runs
+    if decision.verdict == "always":
+        trust(skill.name)
+    resolved = {"id": request.id, "decision": decision.verdict, "via": decision.via}
+    if decision.via == "reply":
+        resolved["reply"] = decision.reply
+    yield {"approval_resolved": resolved}
+
+
 async def _execute_tool_call(registry, call: dict) -> tuple[dict, dict]:
     """Run one tool call. Returns the tool message for the LLM and a UI event."""
     function = call.get("function", {})
@@ -56,12 +113,7 @@ async def _execute_tool_call(registry, call: dict) -> tuple[dict, dict]:
         result = SkillResult.failure("Tool arguments were not valid JSON; nothing was run. Send the call again with a JSON object.")
     else:
         result = await registry.execute_skill(skill_name, **arguments)
-    message = {
-        "role": "tool",
-        "tool_call_id": call.get("id", ""),
-        "name": function.get("name", ""),
-        "content": json.dumps({"success": result.success, "data": _for_model(result.data), "error": result.error}, default=str),
-    }
+    message = _tool_message(call, result)
     event = {
         "name": skill_name,
         "status": "done" if result.success else "error",
@@ -90,8 +142,15 @@ async def stream_chat(
     registry,
     messages: list[dict],
     model: str = DEFAULT_MODEL,
+    *,
+    approvals: ApprovalBroker | None = None,
+    chat_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """Yield UI events: {"content"}, {"tool"} and {"error", "message"}."""
+    """Yield UI events: {"content"}, {"tool"}, {"approval"}, {"approval_resolved"} and {"error", "message"}.
+
+    Change tools the owner has not trusted wait for an answer through `approvals`; without a
+    broker they are refused.
+    """
     tools = registry.get_tool_definitions()
     conversation = list(messages)
 
@@ -111,6 +170,18 @@ async def stream_chat(
         conversation.append({"role": "assistant", "content": None, "tool_calls": calls})
         for call in calls:
             skill_name = registry.resolve_skill_name(call["function"]["name"])
+            gated = _gated_skill(registry, call)
+            if gated:
+                refusal = NEEDS_CHAT
+                if approvals is not None:
+                    async with aclosing(_ask(approvals, chat_id, model, *gated)) as asking:
+                        async for event in asking:
+                            yield event
+                    refusal = _refusal(event["approval_resolved"])
+                if refusal:
+                    conversation.append(_tool_message(call, SkillResult.failure(refusal)))
+                    yield {"tool": {"name": skill_name, "status": "declined"}}
+                    continue
             yield {"tool": {"name": skill_name, "status": "running"}}
             message, event = await _execute_tool_call(registry, call)
             conversation.append(message)
@@ -145,6 +216,9 @@ async def complete_chat(
 
         conversation.append(assistant_message)
         for call in calls:
+            if _gated_skill(registry, call):
+                conversation.append(_tool_message(call, SkillResult.failure(NEEDS_CHAT)))
+                continue
             message, _ = await _execute_tool_call(registry, call)
             conversation.append(message)
 

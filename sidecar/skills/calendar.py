@@ -65,6 +65,8 @@ def _parse_datetime(dt_str: str) -> datetime:
 class CalendarListEventsSkill(BlockingSkill):
     """Skill to list upcoming calendar events."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "calendar.list_events"
@@ -154,6 +156,13 @@ class CalendarListEventsSkill(BlockingSkill):
 
 class CalendarCreateEventSkill(BlockingSkill):
     """Skill to create a new calendar event."""
+
+    approval_title = "Create an event"
+
+    def approval_summary(self, arguments: dict) -> str:
+        attendees = arguments.get("attendees")
+        guests = f", with {', '.join(map(str, attendees))}" if isinstance(attendees, list) and attendees else ""
+        return f"{arguments.get('summary', '')}, {arguments.get('start_time', '')} – {arguments.get('end_time', '')}{guests}"
 
     @property
     def name(self) -> str:
@@ -260,6 +269,12 @@ class CalendarCreateEventSkill(BlockingSkill):
 
 class CalendarUpdateEventSkill(BlockingSkill):
     """Skill to update an existing calendar event."""
+
+    approval_title = "Update an event"
+
+    def approval_summary(self, arguments: dict) -> str:
+        changed = [key for key in ("summary", "description", "location", "start_time", "end_time", "attendees") if arguments.get(key)]
+        return f"Change {', '.join(changed) or 'nothing'} on event {arguments.get('event_id', '')}"
 
     @property
     def name(self) -> str:
@@ -372,6 +387,12 @@ class CalendarUpdateEventSkill(BlockingSkill):
 class CalendarDeleteEventSkill(BlockingSkill):
     """Skill to delete a calendar event."""
 
+    approval_title = "Delete an event"
+    irreversible = True
+
+    def approval_summary(self, arguments: dict) -> str:
+        return f"Delete event {arguments.get('event_id', '')}"
+
     @property
     def name(self) -> str:
         return "calendar.delete_event"
@@ -431,6 +452,8 @@ class CalendarDeleteEventSkill(BlockingSkill):
 
 class CalendarCheckScheduleSkill(BlockingSkill):
     """Skill to check calendar availability (free/busy)."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:

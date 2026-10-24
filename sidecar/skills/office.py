@@ -36,6 +36,8 @@ def _run_office(operation: str, *args: Any) -> Any:
 
 
 class OfficeReadDocumentSkill(SkillBase):
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "office.read_document"
@@ -57,6 +59,8 @@ class OfficeReadDocumentSkill(SkillBase):
 
 
 class OfficeEditDocumentSkill(SkillBase):
+    approval_title = "Edit a document"
+
     @property
     def name(self) -> str:
         return "office.edit_document"
@@ -84,6 +88,8 @@ class OfficeEditDocumentSkill(SkillBase):
 
 
 class OfficeCreatePivotSkill(SkillBase):
+    approval_title = "Build a pivot table"
+
     @property
     def name(self) -> str:
         return "office.create_pivot_table"
@@ -107,6 +113,8 @@ class OfficeCreatePivotSkill(SkillBase):
 
 
 class OfficeReadExcelSkill(SkillBase):
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "office.read_excel"
@@ -128,6 +136,8 @@ class OfficeReadExcelSkill(SkillBase):
 
 
 class OfficeCreatePresentationSkill(SkillBase):
+    approval_title = "Create a presentation"
+
     @property
     def name(self) -> str:
         return "office.create_presentation"

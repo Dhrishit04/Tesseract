@@ -5,12 +5,13 @@ import platform
 import subprocess
 from typing import Any
 
-from automation.policy import load_automation_policy
 from skills.skill_base import SkillBase, SkillResult
 
 
 class AppLauncherLaunchSkill(SkillBase):
     """Skill to launch an application or open a file with its default program."""
+
+    approval_title = "Open an app"
 
     @property
     def name(self) -> str:
@@ -37,9 +38,6 @@ class AppLauncherLaunchSkill(SkillBase):
         target = kwargs.get("target", "")
         if not target:
             return SkillResult.failure("Target parameter is required")
-        # shortcut: one switch guards running programs, upgrade to per-call approval in Phase 2.
-        if not load_automation_policy()["automation_enabled"]:
-            return SkillResult.failure("Launching apps is disabled. Turn on automation in Settings to allow it.")
 
         try:
             if platform.system() == "Windows":
@@ -56,6 +54,8 @@ class AppLauncherLaunchSkill(SkillBase):
 
 class AppLauncherListWindowsSkill(SkillBase):
     """Skill to list visible windows."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:
@@ -105,6 +105,8 @@ class AppLauncherListWindowsSkill(SkillBase):
 
 class AppLauncherFocusWindowSkill(SkillBase):
     """Skill to focus a specific window."""
+
+    approval_title = "Switch windows"
 
     @property
     def name(self) -> str:

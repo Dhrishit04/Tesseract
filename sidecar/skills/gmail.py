@@ -61,6 +61,8 @@ def _extract_body(payload: dict) -> str:
 class GmailReadInboxSkill(BlockingSkill):
     """Skill to read recent emails from Gmail inbox."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "gmail.read_inbox"
@@ -129,6 +131,13 @@ class GmailReadInboxSkill(BlockingSkill):
 
 class GmailSendEmailSkill(BlockingSkill):
     """Skill to send an email via Gmail."""
+
+    approval_title = "Send an email"
+    irreversible = True
+
+    def approval_summary(self, arguments: dict) -> str:
+        cc = f", cc {arguments['cc']}" if arguments.get("cc") else ""
+        return f"To {arguments.get('to', '')}{cc}: {arguments.get('subject', '')}"
 
     @property
     def name(self) -> str:
@@ -217,6 +226,8 @@ class GmailSendEmailSkill(BlockingSkill):
 class GmailSearchSkill(BlockingSkill):
     """Skill to search Gmail emails."""
 
+    kind = "read"
+
     @property
     def name(self) -> str:
         return "gmail.search"
@@ -281,6 +292,11 @@ class GmailSearchSkill(BlockingSkill):
 
 class GmailDraftReplySkill(BlockingSkill):
     """Skill to draft a reply to an email."""
+
+    approval_title = "Draft a reply"
+
+    def approval_summary(self, arguments: dict) -> str:
+        return f"Save a draft reply to message {arguments.get('message_id', '')} (not sent)"
 
     @property
     def name(self) -> str:
@@ -357,6 +373,8 @@ class GmailDraftReplySkill(BlockingSkill):
 
 class GmailGetThreadSkill(BlockingSkill):
     """Skill to get full email thread."""
+
+    kind = "read"
 
     @property
     def name(self) -> str:

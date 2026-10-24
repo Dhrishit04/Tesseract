@@ -19,6 +19,8 @@ from skills.skill_base import SkillBase, SkillResult
 class EchoSkill(SkillBase):
     """Minimal skill used to observe tool execution."""
 
+    kind = "read"  # stands in for a tool that runs freely
+
     calls: list[dict] = []
 
     @property

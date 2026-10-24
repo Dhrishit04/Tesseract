@@ -7,18 +7,20 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from chat_store import derive_title, get_chat_store
 from automation.orchestrator import get_automation_orchestrator
+from llm.approval_reply import classify_reply
 from llm.chat_loop import ChatLoopError, complete_chat, stream_chat
 from llm.openrouter import DEFAULT_MODEL, OPENROUTER_BASE, OpenRouterClient
+from permissions import Decision, get_broker, load_trusted, revoke
 from settings_store import load_settings, save_settings, update_section
 from skills.registry import get_registry
 from voice import get_pipeline, get_stt_skill, get_tts_skill, get_wake_word_skill
@@ -235,11 +237,21 @@ def _save_turn(chat_id: str, recorder: _TurnRecorder) -> None:
         store.add_message(chat_id, "assistant", recorder.text, recorder.tools)
 
 
+def _split_turn_at_reply(chat_id: str, recorder: _TurnRecorder, reply: str) -> _TurnRecorder:
+    """Save what came before a typed approval reply, then the reply, so the chat reads as it happened."""
+    _save_turn(chat_id, recorder)
+    store = get_chat_store()
+    if store.get_chat(chat_id) is not None:
+        store.add_message(chat_id, "user", reply)
+    return _TurnRecorder()
+
+
 @app.post("/chat/stream")
 async def chat_stream(request: MessageRequest):
     """Stream a chat response with skill tool calling, saving the turn when chat_id is given.
 
-    Events: {"content"}, {"tool": {"name", "status"}}, {"error", "message"}, then [DONE].
+    Events: {"content"}, {"tool": {"name", "status"}}, {"approval"}, {"approval_resolved"},
+    {"error", "message"}, then [DONE].
     """
     client = get_client()
     registry = get_skill_registry()
@@ -273,7 +285,11 @@ async def _stream_turn(client, registry, request: MessageRequest, chat: Optional
 
     recorder = _TurnRecorder()
     try:
-        async for event in stream_chat(client, registry, conversation, model):
+        chat_id = chat["id"] if chat else None
+        async for event in stream_chat(client, registry, conversation, model, approvals=get_broker(), chat_id=chat_id):
+            resolved = event.get("approval_resolved")
+            if chat_id and resolved and resolved["via"] == "reply":
+                recorder = _split_turn_at_reply(chat_id, recorder, resolved["reply"])
             recorder.observe(event)
             yield _sse(event)
     except Exception as exc:  # keep the stream well-formed for the UI
@@ -377,6 +393,59 @@ def delete_chat(chat_id: str):
     """Delete a chat and its messages."""
     if not get_chat_store().delete_chat(chat_id):
         raise HTTPException(status_code=404, detail="Chat not found")
+    return {"success": True}
+
+
+# --- Approvals -------------------------------------------------------------
+
+APPROVAL_ENDED = "This request has already ended."
+
+
+class ApprovalAnswer(BaseModel):
+    decision: Literal["allow", "always", "deny"]
+
+
+@app.post("/chat/approvals/{approval_id}", responses={404: {"description": APPROVAL_ENDED}})
+async def answer_approval(approval_id: str, answer: ApprovalAnswer):
+    """Answer an approval card with one of its buttons (async: the broker lives on the event loop)."""
+    if not get_broker().resolve(approval_id, Decision(answer.decision, "button")):
+        raise HTTPException(status_code=404, detail=APPROVAL_ENDED)
+    return {"success": True}
+
+
+class ApprovalReply(BaseModel):
+    text: str = Field(min_length=1)
+
+
+@app.post("/chat/approvals/{approval_id}/reply", responses={404: {"description": APPROVAL_ENDED}})
+async def reply_to_approval(approval_id: str, reply: ApprovalReply):
+    """Answer an approval card in the owner's own words."""
+    broker = get_broker()
+    request = broker.get(approval_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail=APPROVAL_ENDED)
+    verdict = await classify_reply(get_client(), request.model, request, reply.text)
+    if not broker.resolve(approval_id, Decision(verdict, "reply", reply.text)):  # ended while classifying
+        raise HTTPException(status_code=404, detail=APPROVAL_ENDED)
+    return {"decision": verdict}
+
+
+@app.get("/permissions/trusted")
+def list_trusted():
+    """Tools the owner chose "Always allow this" for, by their plain title."""
+    registry = get_skill_registry()
+    rows = []
+    for tool in load_trusted():
+        skill = registry.get_skill(tool)
+        rows.append({"tool": tool, "title": (skill.approval_title if skill else "") or tool})
+    return {"trusted": sorted(rows, key=lambda row: row["title"])}
+
+
+@app.delete("/permissions/trusted/{tool}", responses={404: {"description": "Not always allowed"}})
+def revoke_trusted(tool: str):
+    """Ask before this tool runs again."""
+    if not revoke(tool):
+        raise HTTPException(status_code=404, detail="This action is not always allowed.")
     return {"success": True}
 
 

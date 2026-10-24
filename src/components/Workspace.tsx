@@ -15,6 +15,12 @@ const SUGGESTIONS = [
   "Open Notepad and type a reminder to call the bank",
 ];
 
+function composerHint(answering: boolean, busyElsewhere: boolean): string {
+  if (answering) return "Answer in your own words, or use the buttons above";
+  if (busyElsewhere) return "Finishing a reply in another chat";
+  return "Enter to send, Shift+Enter for a new line";
+}
+
 interface WorkspaceProps {
   chat: ChatState;
   chatId: string | null;
@@ -26,15 +32,21 @@ interface WorkspaceProps {
 }
 
 export function Workspace({ chat, chatId, title, sidecar, onRetrySidecar, onOpenSettings, onOpenSidebar }: Readonly<WorkspaceProps>) {
-  const { messages, loading, loadError, isLoading, busyElsewhere, model, setModel, sendMessage, stop } = chat;
+  const { messages, loading, loadError, isLoading, busyElsewhere, model, setModel, sendMessage, stop, pendingApproval, answer, reply } = chat;
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const reduced = useReducedMotionPreference();
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
-    if (!draft.trim() || isLoading || busyElsewhere) return;
-    void sendMessage(draft);
+    if (!draft.trim()) return;
+    if (pendingApproval) {
+      reply(draft); // answers the card waiting above
+    } else if (isLoading || busyElsewhere) {
+      return;
+    } else {
+      void sendMessage(draft);
+    }
     setDraft("");
   };
 
@@ -89,7 +101,13 @@ export function Workspace({ chat, chatId, title, sidecar, onRetrySidecar, onOpen
     );
   } else {
     body = messages.map((message) => (
-      <MessageView key={message.id} message={message} isStreaming={isLoading && message.id === lastId} onOpenSettings={onOpenSettings} />
+      <MessageView
+        key={message.id}
+        message={message}
+        isStreaming={isLoading && message.id === lastId}
+        onOpenSettings={onOpenSettings}
+        onAnswer={answer}
+      />
     ));
   }
 
@@ -134,13 +152,16 @@ export function Workspace({ chat, chatId, title, sidecar, onRetrySidecar, onOpen
           placeholder="Talk to Tesseract"
           aria-describedby="composer-hint"
         />
-        {isLoading ? (
-          <button type="button" className="primary-button" onClick={stop}>Stop</button>
-        ) : (
-          <button type="submit" className="primary-button" disabled={!draft.trim() || busyElsewhere}>Send</button>
-        )}
+        <div className="composer-actions">
+          {pendingApproval && <button type="submit" className="primary-button" disabled={!draft.trim()}>Reply</button>}
+          {isLoading ? (
+            <button type="button" className={pendingApproval ? "secondary-button" : "primary-button"} onClick={stop}>Stop</button>
+          ) : (
+            <button type="submit" className="primary-button" disabled={!draft.trim() || busyElsewhere}>Send</button>
+          )}
+        </div>
         <p id="composer-hint" className="composer-hint">
-          {busyElsewhere ? "Finishing a reply in another chat" : "Enter to send, Shift+Enter for a new line"}
+          {composerHint(Boolean(pendingApproval), busyElsewhere)}
         </p>
       </form>
     </section>

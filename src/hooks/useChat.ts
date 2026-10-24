@@ -1,40 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChatEvent, ToolEvent, streamChat } from "../services/api";
+import { ApprovalDecision, ChatEvent, answerApproval, replyToApproval, streamChat } from "../services/api";
 import { StoredMessage, getChat, updateChat } from "../services/chats";
 import { DEFAULT_MODEL, getSettings } from "../services/settings";
-import { errorMessage } from "../lib/sidecar";
+import { ApprovalState, Message, applyEvent, markPendingStopped } from "../lib/chatEvents";
+import { SidecarError, errorMessage } from "../lib/sidecar";
 
-export interface ToolActivity extends ToolEvent {
-  id: string;
-}
+export type { Message, ToolActivity } from "../lib/chatEvents";
 
-export interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  tools: ToolActivity[];
-  error?: { message: string; code?: string };
-  stopped?: boolean;
-}
-
-function applyEvent(message: Message, event: ChatEvent): Message {
-  switch (event.kind) {
-    case "content":
-      return { ...message, content: message.content + event.text };
-    case "error":
-      return { ...message, error: { message: event.message, code: event.code } };
-    case "tool": {
-      const tools = [...message.tools];
-      const running = tools.findIndex((tool) => tool.name === event.tool.name && tool.status === "running");
-      if (event.tool.status !== "running" && running >= 0) {
-        tools[running] = { ...tools[running], ...event.tool };
-      } else {
-        tools.push({ ...event.tool, id: crypto.randomUUID() });
-      }
-      return { ...message, tools };
-    }
-  }
-}
+const APPROVAL_ENDED = "This request has already ended.";
 
 function fromStored(message: StoredMessage): Message {
   return {
@@ -42,6 +15,7 @@ function fromStored(message: StoredMessage): Message {
     role: message.role,
     content: message.content,
     tools: message.tools.map((tool) => ({ ...tool, id: crypto.randomUUID() })),
+    approvals: [],
   };
 }
 
@@ -129,8 +103,8 @@ export function useChat(chatId: string | null, { ensureChat, onCreated, onTurnSa
         ...all,
         [id]: [
           ...(all[id] ?? []),
-          { id: crypto.randomUUID(), role: "user", content, tools: [] },
-          { id: assistantId, role: "assistant", content: "", tools: [] },
+          { id: crypto.randomUUID(), role: "user", content, tools: [], approvals: [] },
+          { id: assistantId, role: "assistant", content: "", tools: [], approvals: [] },
         ],
       }));
       if (!chatId) {
@@ -142,19 +116,33 @@ export function useChat(chatId: string | null, { ensureChat, onCreated, onTurnSa
       const controller = new AbortController();
       abortRef.current = { chatId: id, controller };
       setStreamingChat(id);
+      // The message events go to; a typed approval reply starts a new one, as the server saves it.
+      let targetId = assistantId;
+      const onEvent = (event: ChatEvent) => {
+        updateMessage(id, targetId, (message) => applyEvent(message, event));
+        const reply = event.kind === "approval_resolved" ? event.resolution.reply : undefined;
+        if (reply === undefined) return;
+        targetId = crypto.randomUUID();
+        setMessagesByChat((all) => ({
+          ...all,
+          [id]: [
+            ...(all[id] ?? []),
+            { id: crypto.randomUUID(), role: "user", content: reply, tools: [], approvals: [] },
+            { id: targetId, role: "assistant", content: "", tools: [], approvals: [] },
+          ],
+        }));
+      };
       try {
-        await streamChat(
-          { message: content, model, chat_id: id },
-          (event) => updateMessage(id, assistantId, (message) => applyEvent(message, event)),
-          controller.signal,
-        );
+        await streamChat({ message: content, model, chat_id: id }, onEvent, controller.signal);
       } catch (error) {
         if (controller.signal.aborted) {
-          updateMessage(id, assistantId, (message) => ({ ...message, stopped: true }));
+          updateMessage(id, targetId, (message) => ({ ...message, stopped: true }));
         } else {
-          updateMessage(id, assistantId, (message) => ({ ...message, error: { message: errorMessage(error), code: "offline" } }));
+          updateMessage(id, targetId, (message) => ({ ...message, error: { message: errorMessage(error), code: "offline" } }));
         }
       } finally {
+        // However the turn ended, nothing is waiting on its cards any more.
+        setMessagesByChat((all) => (all[id] ? { ...all, [id]: all[id].map(markPendingStopped) } : all));
         abortRef.current = null;
         setStreamingChat(null);
         onTurnSaved();
@@ -164,6 +152,52 @@ export function useChat(chatId: string | null, { ensureChat, onCreated, onTurnSa
   );
 
   const stop = useCallback(() => abortRef.current?.controller.abort(), []);
+
+  const updateCard = useCallback((id: string, approvalId: string, change: (card: ApprovalState) => ApprovalState) => {
+    setMessagesByChat((all) => ({
+      ...all,
+      [id]: (all[id] ?? []).map((message) =>
+        message.approvals.some((card) => card.id === approvalId)
+          ? { ...message, approvals: message.approvals.map((card) => (card.id === approvalId ? change(card) : card)) }
+          : message,
+      ),
+    }));
+  }, []);
+
+  /** Mark a card as being answered; the approval_resolved event settles it, a failure puts it back. */
+  const settle = useCallback(
+    (id: string, approvalId: string, request: () => Promise<unknown>) => {
+      updateCard(id, approvalId, (card) => ({ ...card, status: "answering", error: undefined }));
+      request().catch((error) =>
+        updateCard(id, approvalId, (card) => {
+          if (card.status !== "answering") return card; // the stream already settled it
+          if (error instanceof SidecarError && error.status === 404) return { ...card, status: "stopped", error: APPROVAL_ENDED };
+          return { ...card, status: "pending", error: errorMessage(error) };
+        }),
+      );
+    },
+    [updateCard],
+  );
+
+  const messages = chatId ? messagesByChat[chatId] ?? [] : [];
+  const pendingApproval =
+    messages.flatMap((message) => message.approvals).find((card) => card.status === "pending") ?? null;
+
+  const answer = useCallback(
+    (approvalId: string, decision: ApprovalDecision) => {
+      if (chatId) settle(chatId, approvalId, () => answerApproval(approvalId, decision));
+    },
+    [chatId, settle],
+  );
+
+  const pendingId = pendingApproval?.id;
+  const reply = useCallback(
+    (text: string) => {
+      const content = text.trim();
+      if (chatId && pendingId && content) settle(chatId, pendingId, () => replyToApproval(pendingId, content));
+    },
+    [chatId, pendingId, settle],
+  );
 
   /** Stop and forget a chat that was deleted. */
   const discard = useCallback((id: string) => {
@@ -177,7 +211,7 @@ export function useChat(chatId: string | null, { ensureChat, onCreated, onTurnSa
   }, []);
 
   return {
-    messages: chatId ? messagesByChat[chatId] ?? [] : [],
+    messages,
     loading: Boolean(chatId) && !messagesByChat[chatId ?? ""] && !loadError,
     loadError,
     isLoading: streamingChat !== null && streamingChat === chatId,
@@ -186,6 +220,9 @@ export function useChat(chatId: string | null, { ensureChat, onCreated, onTurnSa
     setModel,
     sendMessage,
     stop,
+    pendingApproval,
+    answer,
+    reply,
     discard,
   };
 }

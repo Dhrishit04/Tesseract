@@ -8,6 +8,7 @@ import pkgutil
 from pathlib import Path
 from typing import Any
 
+from automation.policy import load_automation_policy
 from skills.skill_base import SkillBase
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 # skills are namespaced with dots ("filesystem.read_file").
 TOOL_NAME_SEPARATOR = "__"
 NOT_SKILL_MODULES = {"skill_base", "registry"}
+# The automation switch decides whether these tools exist at all.
+AUTOMATION_SKILL_PREFIXES = ("web_automation.", "desktop_automation.", "office.")
 
 
 def to_tool_name(skill_name: str) -> str:
@@ -110,8 +113,11 @@ class SkillRegistry:
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """Get all skills as OpenAI-compatible tool definitions."""
+        automation_on = load_automation_policy()["automation_enabled"]
         definitions = []
         for skill in self._skills.values():
+            if not automation_on and skill.name.startswith(AUTOMATION_SKILL_PREFIXES):
+                continue
             definition = skill.to_tool_definition()
             definition["function"]["name"] = to_tool_name(skill.name)
             definitions.append(definition)

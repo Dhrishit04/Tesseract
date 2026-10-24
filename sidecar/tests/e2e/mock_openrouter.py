@@ -3,8 +3,13 @@
 Run: python -m tests.e2e.mock_openrouter --port 8799
 Then start the sidecar with OPENROUTER_BASE_URL=http://127.0.0.1:8799/v1.
 
-Behaviour: a prompt mentioning "files" triggers one filesystem.list_directory tool
-call; any other prompt is answered with a short markdown reply that quotes it.
+Behaviour:
+- a prompt mentioning "files" triggers one filesystem.list_directory tool call;
+- a prompt containing "save a note" triggers one filesystem.write_file call on approved.txt,
+  answered with "Saved approved.txt." when it ran or "Okay, I left it alone." when it did not;
+- an approval-reply classification request (system message carrying CLASSIFY_MARKER) answers
+  always / allow / deny / other from the words in the reply;
+- any other prompt is answered with a short markdown reply that quotes it.
 """
 
 import argparse
@@ -13,6 +18,8 @@ import json
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
+
+from llm.approval_reply import CLASSIFY_MARKER
 
 app = FastAPI()
 
@@ -28,8 +35,28 @@ def _sse(chunks: list[dict]):
     yield "data: [DONE]\n\n"
 
 
+def _words(text: str) -> list[dict]:
+    return [{"content": part + " "} for part in text.split(" ")]
+
+
+def _classify(reply: str) -> str:
+    reply = reply.lower()
+    if "don't ask" in reply or "always" in reply:
+        return "always"
+    if any(word in reply for word in ("yes", "go ahead", "sure")):
+        return "allow"
+    if any(word in reply for word in ("no", "nah", "wait")):
+        return "deny"
+    return "other"
+
+
 def _reply(messages: list[dict]) -> list[dict]:
     last = messages[-1]
+    if messages[0]["role"] == "system" and CLASSIFY_MARKER in messages[0]["content"]:
+        return [{"content": _classify(str(last.get("content", "")))}]
+    if last["role"] == "tool" and last.get("name") == "filesystem__write_file":
+        ran = json.loads(last["content"]).get("success")
+        return _words("Saved approved.txt." if ran else "Okay, I left it alone.")
     if last["role"] == "tool":
         listing = json.loads(last["content"]).get("data") or {}
         names = [entry.get("name", "?") for entry in listing.get("entries", [])][:8]
@@ -37,6 +64,12 @@ def _reply(messages: list[dict]) -> list[dict]:
         return [{"content": part + " "} for part in text.split(" ")]
 
     prompt = str(last.get("content", ""))
+    if "save a note" in prompt.lower():
+        arguments = {"path": "approved.txt", "content": "hello from the e2e test"}
+        return [{"tool_calls": [{
+            "index": 0, "id": "call_1", "type": "function",
+            "function": {"name": "filesystem__write_file", "arguments": json.dumps(arguments)},
+        }]}]
     if "files" in prompt.lower():
         return [{"tool_calls": [{
             "index": 0, "id": "call_1", "type": "function",
