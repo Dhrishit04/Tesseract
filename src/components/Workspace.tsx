@@ -117,7 +117,8 @@ export function Workspace({ chat, chatId, title, sidecar, onRetrySidecar, onOpen
         <button type="button" className="quiet-button sidebar-open-button" onClick={onOpenSidebar}>Chats</button>
         <h1 className="workspace-title">{title}</h1>
         <div className="workspace-tools">
-          <ModelPicker currentModel={model} onModelChange={setModel} />
+          {/* Remount after an outage so models load once the sidecar finishes starting. */}
+          <ModelPicker key={sidecar === "offline" ? "offline" : "up"} currentModel={model} onModelChange={setModel} autoPick={!chatId} />
           <VoiceControls onTranscription={(text) => void sendMessage(text)} onOpenSettings={onOpenSettings} />
         </div>
       </header>

@@ -52,7 +52,7 @@ class Phase11IntegrationTests(unittest.TestCase):
 
                 self.assertEqual(
                     load_automation_policy(),
-                    {"automation_enabled": True, "ocr_enabled": True},
+                    {"automation_enabled": True, "ocr_enabled": True, "share_screenshots": False},
                 )
 
 

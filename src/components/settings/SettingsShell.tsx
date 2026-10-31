@@ -32,7 +32,7 @@ const SECTIONS: { id: SectionId; label: string; desktopOnly?: boolean }[] = [
 ];
 
 /** Sections whose fields are saved with the Save button (the rest apply immediately). */
-const FORM_SECTIONS = new Set<SectionId>(["profile", "models", "google", "voice", "automation"]);
+const FORM_SECTIONS = new Set<SectionId>(["profile", "models", "permissions", "google", "voice", "automation"]);
 
 type SaveState = { kind: "idle" | "saving" | "saved" | "error"; text?: string };
 
@@ -162,7 +162,7 @@ export function SettingsShell({ section, legal, sidecar, theme, onThemeChange }:
         {section === "profile" && <ProfileSection {...formProps} />}
         {section === "appearance" && <AppearanceSection preference={theme} onChange={changeTheme} />}
         {section === "models" && <ModelsSection {...formProps} />}
-        {section === "permissions" && <PermissionsSection />}
+        {section === "permissions" && <PermissionsSection {...formProps} />}
         {section === "google" && <GoogleAccountSection google={settings.google} onChange={(google) => update({ google })} />}
         {section === "voice" && <VoiceSection {...formProps} />}
         {section === "automation" && <AutomationSection {...formProps} />}

@@ -10,7 +10,7 @@ vi.mock("../lib/sidecar", () => ({
   sidecarJson: vi.fn(),
 }));
 
-const { DEFAULT_SETTINGS, saveSettings } = await import("./settings");
+const { DEFAULT_SETTINGS, getSettings, saveSettings } = await import("./settings");
 
 describe("saveSettings in the desktop app", () => {
   beforeEach(() => {
@@ -35,5 +35,17 @@ describe("saveSettings in the desktop app", () => {
     invoke.mockRejectedValue(new Error("disk full"));
 
     await expect(saveSettings(DEFAULT_SETTINGS)).rejects.toThrow("disk full");
+  });
+});
+
+describe("getSettings", () => {
+  it("drops secrets that now live in the vault", async () => {
+    invoke.mockReset().mockResolvedValue({ openrouter_api_key: "sk-or-x", google: { client_id: "i", client_secret: "s" } });
+
+    const settings = await getSettings();
+
+    expect(settings).not.toHaveProperty("openrouter_api_key");
+    expect(settings.google).not.toHaveProperty("client_secret");
+    expect(settings.google.client_id).toBe("i");
   });
 });

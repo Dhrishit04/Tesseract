@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { errorMessage } from "../../lib/sidecar";
 import { TrustedTool, listTrusted, revokeTrusted } from "../../services/permissions";
-import { SettingsSection } from "../fields";
+import { SelectField, SettingsSection } from "../fields";
+import type { FormSectionProps } from "./formSections";
+import { FILE_ACCESS_LEVELS } from "./options";
 
-/** The "Always allow" list. Revoking applies immediately. */
-export function PermissionsSection() {
+/** How far the tools reach, then the "Always allow" list. Revoking applies immediately. */
+export function PermissionsSection({ settings, update }: Readonly<Pick<FormSectionProps, "settings" | "update">>) {
   const [trusted, setTrusted] = useState<TrustedTool[] | null>(null);
   const [loadError, setLoadError] = useState("");
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
@@ -76,6 +78,13 @@ export function PermissionsSection() {
       title="Permissions"
       description="Tesseract reads freely but asks before it changes anything. Actions you chose Always allow for run without asking."
     >
+      <SelectField
+        label="What Tesseract can access"
+        value={settings.file_access}
+        options={FILE_ACCESS_LEVELS}
+        hint={`${FILE_ACCESS_LEVELS.find((level) => level.value === settings.file_access)?.hint ?? ""} Anything it reads goes to your model provider. Tesseract's own data stays off limits at every level.`}
+        onChange={(file_access) => update({ file_access })}
+      />
       {body}
     </SettingsSection>
   );

@@ -18,6 +18,7 @@ export function GoogleAccountSection({ google, onChange }: Readonly<GoogleAccoun
   const [waiting, setWaiting] = useState(false);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
   const pollRef = useRef<number>();
 
   const loadStatus = useCallback(async () => {
@@ -46,7 +47,7 @@ export function GoogleAccountSection({ google, onChange }: Readonly<GoogleAccoun
     setWorking(true);
     setMessage("");
     try {
-      const url = await startGoogleSignIn(google.client_id.trim(), google.client_secret.trim());
+      const url = await startGoogleSignIn(google.client_id.trim(), clientSecret.trim());
       await openExternal(url);
       setWaiting(true);
       const started = Date.now();
@@ -82,7 +83,7 @@ export function GoogleAccountSection({ google, onChange }: Readonly<GoogleAccoun
   };
 
   const notInstalled = status?.error?.includes("not installed");
-  const canConnect = Boolean(google.client_id.trim() && google.client_secret.trim()) && !working && !waiting;
+  const canConnect = Boolean(google.client_id.trim() && (clientSecret.trim() || status?.configured)) && !working && !waiting;
 
   return (
     <SettingsSection
@@ -117,8 +118,9 @@ export function GoogleAccountSection({ google, onChange }: Readonly<GoogleAccoun
           <TextField
             label="OAuth client secret"
             secret
-            value={google.client_secret}
-            onChange={(client_secret) => onChange({ ...google, client_secret })}
+            value={clientSecret}
+            onChange={setClientSecret}
+            hint={status?.configured && !clientSecret ? "A secret is already saved. Leave this blank to keep it." : undefined}
           />
           <div className="button-row">
             <button type="button" className="primary-button" disabled={!canConnect || notInstalled} onClick={() => void connect()}>

@@ -10,6 +10,13 @@ export interface HealthStatus {
 export interface ModelInfo {
   id: string;
   name?: string;
+  provider: string;
+}
+
+export interface ModelList {
+  models: ModelInfo[];
+  /** Provider id to a short reason its models couldn't be loaded. */
+  errors: Record<string, string>;
 }
 
 export interface SkillInfo {
@@ -58,9 +65,9 @@ export async function checkSidecarHealth(): Promise<HealthStatus> {
   return sidecarJson<HealthStatus>("/health");
 }
 
-export async function listModels(): Promise<ModelInfo[]> {
-  const data = await sidecarJson<{ models?: ModelInfo[] }>("/models");
-  return data.models ?? [];
+export async function listModels(): Promise<ModelList> {
+  const data = await sidecarJson<Partial<ModelList>>("/models");
+  return { models: data.models ?? [], errors: data.errors ?? {} };
 }
 
 export async function listSkills(): Promise<SkillInfo[]> {

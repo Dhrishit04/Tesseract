@@ -1,9 +1,11 @@
-import { openExternal } from "../../lib/sidecar";
+import { useState } from "react";
 import type { AutomationSettings, ProfileSettings, Settings, VoiceSettings } from "../../services/settings";
 import { SelectField, SettingsSection, TextAreaField, TextField, Toggle } from "../fields";
-import { CLOUD_VOICES, LANGUAGES, MODELS, PIPER_VOICES, STT_MODELS, TTS_ENGINES, WAKE_WORDS, option } from "./options";
+import { ModelPicker } from "../ModelPicker";
+import { AccountsSection } from "./AccountsSection";
+import { CLOUD_VOICES, LANGUAGES, PIPER_VOICES, STT_MODELS, TTS_ENGINES, WAKE_WORDS, option } from "./options";
 
-export type SettingsErrors = Partial<Record<"apiKey" | "timeout", string>>;
+export type SettingsErrors = Partial<Record<"timeout", string>>;
 
 export interface FormSectionProps {
   settings: Settings;
@@ -13,8 +15,6 @@ export interface FormSectionProps {
 
 export function validateSettings(settings: Settings): SettingsErrors {
   const errors: SettingsErrors = {};
-  const key = settings.openrouter_api_key.trim();
-  if (key && !key.startsWith("sk-or-")) errors.apiKey = "OpenRouter keys start with sk-or-. Check that you copied the whole key.";
   const timeout = settings.automation.browser_timeout;
   if (!Number.isFinite(timeout) || timeout < 1000 || timeout > 300000) errors.timeout = "Enter a value between 1 and 300 seconds.";
   return errors;
@@ -42,36 +42,23 @@ export function ProfileSection({ settings, update }: Readonly<FormSectionProps>)
   );
 }
 
-export function ModelsSection({ settings, update, errors }: Readonly<FormSectionProps>) {
+export function ModelsSection({ settings, update }: Readonly<FormSectionProps>) {
+  // Bumped when an account changes so the model list below is fetched again.
+  const [accountsVersion, setAccountsVersion] = useState(0);
   return (
     <SettingsSection
       id="models"
       title="Models & accounts"
-      description="Tesseract sends your requests to the model you choose through OpenRouter, using your own API key."
+      description="Sign in with ChatGPT or add an API key. Tesseract only lists models from accounts you connect."
     >
-      <TextField
-        label="OpenRouter API key"
-        secret
-        value={settings.openrouter_api_key}
-        placeholder="sk-or-v1-..."
-        error={errors.apiKey}
-        onChange={(openrouter_api_key) => update({ openrouter_api_key })}
-        hint={
-          <>
-            Create one at{" "}
-            <a href="https://openrouter.ai/keys" onClick={(event) => { event.preventDefault(); void openExternal("https://openrouter.ai/keys"); }}>
-              openrouter.ai/keys
-            </a>
-            . It is saved in plain text in your settings file.
-          </>
-        }
-      />
-      <SelectField
+      <AccountsSection onChange={() => setAccountsVersion((version) => version + 1)} />
+      <ModelPicker
+        key={accountsVersion}
         label="Default model"
-        value={settings.default_model}
-        options={MODELS}
+        currentModel={settings.default_model}
+        onModelChange={(default_model) => update({ default_model })}
         hint="Used for new chats. Each chat remembers the model you pick in it."
-        onChange={(default_model) => update({ default_model })}
+        connectHint="Connect an account above to choose a default model."
       />
     </SettingsSection>
   );
@@ -174,6 +161,12 @@ export function AutomationSection({ settings, update, errors }: Readonly<FormSec
             checked={automation.office_use_com}
             onChange={(office_use_com) => setAutomation({ office_use_com })}
             hint="Windows only. Otherwise documents are edited directly without opening Office."
+          />
+          <Toggle
+            label="Let the model see screenshots"
+            checked={automation.share_screenshots}
+            onChange={(share_screenshots) => setAutomation({ share_screenshots })}
+            hint="Helps in apps that hide their controls. Tesseract asks before each screenshot unless you always allow it, and anything visible in it goes to your model provider. The model must support images."
           />
         </>
       )}

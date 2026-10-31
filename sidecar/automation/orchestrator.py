@@ -107,6 +107,9 @@ class AutomationOrchestrator:
                 "ocr": self.desktop_automation.ocr,
                 "resize_window": self.desktop_automation.resize_window,
                 "list_windows": self.desktop_automation.list_windows,
+                "press_keys": self.desktop_automation.press_keys,
+                "scroll": self.desktop_automation.scroll,
+                "wait_check": self.desktop_automation.wait_check,
             }
 
             if action not in actions:

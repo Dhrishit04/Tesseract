@@ -2,7 +2,7 @@
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -85,7 +85,8 @@ pub struct SidecarProcess {
 impl SidecarProcess {
     pub fn start(&self, command: &SidecarCommand) -> std::io::Result<()> {
         let mut process = Command::new(&command.program);
-        process.args(&command.args).current_dir(&command.working_dir);
+        // The sidecar exits when this pipe closes, so a killed app can't leave old code on the port.
+        process.args(&command.args).current_dir(&command.working_dir).env("TESSERACT_APP_PIPE", "1").stdin(Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -218,6 +219,24 @@ mod tests {
             .map(|out| String::from_utf8_lossy(&out.stdout).lines().filter(|l| l.trim().parse::<u32>().is_ok()).count())
             .unwrap_or(0);
         assert_eq!(survivors, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_stdin_stays_open_until_the_app_lets_go() {
+        // findstr reads stdin until it closes, as the sidecar does. Dropping our end is what the OS does when the app dies.
+        let process = SidecarProcess::default();
+        let command = SidecarCommand { program: PathBuf::from("findstr"), args: vec!["x".into()], working_dir: std::env::temp_dir() };
+        process.start(&command).unwrap();
+        let mut guard = process.child.lock().unwrap();
+        let child = guard.as_mut().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(child.try_wait().unwrap().is_none());
+
+        drop(child.stdin.take());
+        std::thread::sleep(Duration::from_millis(500));
+
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]

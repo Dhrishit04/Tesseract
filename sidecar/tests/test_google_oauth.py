@@ -7,13 +7,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import keyring
+import keyring.backends.fail
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi.testclient import TestClient
 from google.oauth2.credentials import Credentials
 
 import server
 from auth import google_oauth
 from auth.google_oauth import GoogleOAuthManager
+from secret_store import get_secret, set_secret
+from tests.secret_doubles import PrivateVault
 
 
 def make_credentials(expired: bool = False) -> Credentials:
@@ -60,8 +65,9 @@ def gmail_service(email: str) -> MagicMock:
     return service
 
 
-class GoogleOAuthManagerTests(unittest.TestCase):
+class GoogleOAuthManagerTests(PrivateVault, unittest.TestCase):
     def setUp(self):
+        super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.tokens_dir = Path(self.tmp.name)
         self.manager = GoogleOAuthManager(tokens_dir=self.tokens_dir)
@@ -70,6 +76,7 @@ class GoogleOAuthManagerTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+        super().tearDown()
 
     def test_callback_reuses_the_flow_that_issued_the_url(self):
         with patch.object(google_oauth, "Flow", FakeFlow), \
@@ -89,7 +96,7 @@ class GoogleOAuthManagerTests(unittest.TestCase):
         self.assertFalse(status.connected)
         self.assertIn("state", status.error.lower())
 
-    def test_tokens_round_trip_with_256_bit_key(self):
+    def test_tokens_round_trip_through_vault(self):
         self.manager._credentials = make_credentials()
         self.manager._store_credentials()
 
@@ -97,14 +104,11 @@ class GoogleOAuthManagerTests(unittest.TestCase):
         reloaded.configure("client", "secret")
         self.assertTrue(reloaded.load_credentials())
         self.assertEqual(reloaded._credentials.token, "access-token")
-        self.assertEqual(len((self.tokens_dir / "encryption_key").read_bytes()), 32)
-        self.assertNotIn(b"access-token", (self.tokens_dir / "google_tokens.enc").read_bytes())
 
     def test_corrupt_token_file_is_reported_not_raised(self):
         self.manager._credentials = make_credentials()
         self.manager._store_credentials()
-        token_file = self.tokens_dir / "google_tokens.enc"
-        token_file.write_bytes(token_file.read_bytes()[:-1] + b"x")  # damaged GCM tag
+        set_secret("google_tokens", "damaged")
 
         fresh = GoogleOAuthManager(tokens_dir=self.tokens_dir)
         fresh.configure("client", "secret")
@@ -116,18 +120,67 @@ class GoogleOAuthManagerTests(unittest.TestCase):
 
         self.assertFalse(self.manager.is_configured())
 
-    def test_legacy_fernet_tokens_still_load(self):
-        key = Fernet.generate_key()
-        (self.tokens_dir / "encryption_key").write_bytes(key)
-        legacy = (
+    def legacy_tokens(self) -> str:
+        expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        return (
             '{"token": "old", "refresh_token": "r", "token_uri": "https://oauth2.googleapis.com/token",'
-            ' "client_id": "client", "client_secret": "secret", "scopes": [],'
-            f' "expiry": "{(datetime.now(timezone.utc) + timedelta(hours=1)).replace(tzinfo=None).isoformat()}"}}'
+            f' "client_id": "client", "client_secret": "secret", "scopes": [], "expiry": "{expiry}"}}'
         )
-        (self.tokens_dir / "google_tokens.enc").write_bytes(Fernet(key).encrypt(legacy.encode()))
 
-        self.assertTrue(self.manager.load_credentials())
-        self.assertEqual(self.manager._credentials.token, "old")
+    def write_legacy_files(self, key: bytes, blob: bytes):
+        (self.tokens_dir / "encryption_key").write_bytes(key)
+        (self.tokens_dir / "google_tokens.enc").write_bytes(blob)
+
+    def test_tokens_saved_in_vault_not_files(self):
+        self.manager._credentials = make_credentials()
+        self.manager._store_credentials()
+
+        self.assertEqual(list(self.tokens_dir.iterdir()), [])
+        self.assertEqual(get_secret("google_tokens")["refresh_token"], "refresh-token")
+
+    def test_legacy_token_files_migrate_once(self):
+        aes_key = AESGCM.generate_key(bit_length=256)
+        nonce = b"n" * 12
+        aes_blob = nonce + AESGCM(aes_key).encrypt(nonce, self.legacy_tokens().encode(), None)
+        fernet_key = Fernet.generate_key()
+        for key, blob in ((aes_key, aes_blob), (fernet_key, Fernet(fernet_key).encrypt(self.legacy_tokens().encode()))):
+            with self.subTest(key_length=len(key)):
+                self.write_legacy_files(key, blob)
+
+                self.manager.migrate_legacy_tokens()
+
+                self.assertEqual(get_secret("google_tokens")["token"], "old")
+                self.assertEqual(list(self.tokens_dir.iterdir()), [])
+                set_secret("google_tokens", {"token": "newer"})
+                self.manager.migrate_legacy_tokens()
+                self.assertEqual(get_secret("google_tokens"), {"token": "newer"})
+
+    def test_legacy_files_stay_when_vault_unavailable(self):
+        fernet_key = Fernet.generate_key()
+        self.write_legacy_files(fernet_key, Fernet(fernet_key).encrypt(self.legacy_tokens().encode()))
+        keyring.set_keyring(keyring.backends.fail.Keyring())
+
+        self.manager.migrate_legacy_tokens()
+
+        self.assertEqual(len(list(self.tokens_dir.iterdir())), 2)
+
+    def test_locked_legacy_files_do_not_stop_startup(self):
+        fernet_key = Fernet.generate_key()
+        self.write_legacy_files(fernet_key, Fernet(fernet_key).encrypt(self.legacy_tokens().encode()))
+
+        with patch.object(Path, "unlink", side_effect=PermissionError("in use")), \
+                self.assertLogs("auth.google_oauth", level="ERROR"):
+            self.manager.migrate_legacy_tokens()
+
+        self.assertEqual(get_secret("google_tokens")["token"], "old")
+
+    def test_client_secret_comes_from_vault(self):
+        set_secret("google_client_secret", "vault-secret")
+        fresh = GoogleOAuthManager(tokens_dir=self.tokens_dir)
+
+        fresh.load_settings({"google": {"client_id": "id"}})
+
+        self.assertTrue(fresh.is_configured())
 
     def test_expired_credentials_are_refreshed_before_use(self):
         credentials = make_credentials(expired=True)
@@ -141,7 +194,7 @@ class GoogleOAuthManagerTests(unittest.TestCase):
 
         self.assertEqual(self.manager.get_credentials().token, "fresh-token")
 
-    def test_disconnect_revokes_token_and_deletes_files(self):
+    def test_disconnect_revokes_token_and_deletes_vault_tokens(self):
         self.manager._credentials = make_credentials()
         self.manager._store_credentials()
 
@@ -149,7 +202,7 @@ class GoogleOAuthManagerTests(unittest.TestCase):
             asyncio.run(self.manager.disconnect())
 
         revoke.assert_awaited_once_with("refresh-token")
-        self.assertFalse((self.tokens_dir / "google_tokens.enc").exists())
+        self.assertIsNone(get_secret("google_tokens"))
 
 
 class OAuthCallbackEndpointTests(unittest.TestCase):

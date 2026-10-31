@@ -5,12 +5,19 @@ from typing import AsyncGenerator, Optional
 
 import httpx
 
+from llm.images import SCREENSHOT_NOTE, after_tool_results
+
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
 
 
 def _error(message: str) -> dict:
     return {"error": True, "message": message}
+
+
+def _image_parts(images: list[dict]) -> list[dict]:
+    urls = [f"data:{image['media_type']};base64,{image['data']}" for image in images]
+    return [{"type": "text", "text": SCREENSHOT_NOTE}, *({"type": "image_url", "image_url": {"url": url}} for url in urls)]
 
 
 class OpenRouterClient:
@@ -31,7 +38,7 @@ class OpenRouterClient:
         }
 
     def _payload(self, messages: list[dict], model: str, tools: Optional[list[dict]], stream: bool) -> dict:
-        payload = {"model": model, "messages": messages, "stream": stream}
+        payload = {"model": model, "messages": list(after_tool_results(messages, _image_parts)), "stream": stream}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -96,15 +103,11 @@ class OpenRouterClient:
         return chunk or None
 
     async def list_models(self) -> list[dict]:
-        """Fetch available models from OpenRouter."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0, transport=self.transport) as client:
-                response = await client.get(f"{self.base_url}/models", headers=self.headers)
-        except httpx.HTTPError:
-            return []
-        if response.status_code == 200:
-            return response.json().get("data", [])
-        return []
+        """Fetch available models from OpenRouter; raises on a failed request, so /models can say what went wrong."""
+        async with httpx.AsyncClient(timeout=10.0, transport=self.transport) as client:
+            response = await client.get(f"{self.base_url}/models", headers=self.headers)
+        response.raise_for_status()
+        return response.json().get("data", [])
 
     async def chat(
         self,

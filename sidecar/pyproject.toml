@@ -14,6 +14,10 @@ dependencies = [
     "xlrd>=2.0.1",
     "pandas>=2.0.0",
     "python-pptx>=0.6.23",
+    "keyring>=25.7",
+    "cryptography>=42",
+    "pyjwt[crypto]>=2.10",
+    "anthropic>=2.3,<3",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +31,6 @@ google = [
     "google-auth>=2.0.0",
     "google-api-python-client>=2.0.0",
     "google-auth-oauthlib>=1.0.0",
-    "cryptography>=42.0.0",
 ]
 automation = [
     "playwright>=1.40.0",

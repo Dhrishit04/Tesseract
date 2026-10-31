@@ -1,20 +1,42 @@
 """Example filesystem skill for testing the skill system."""
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
+from file_access import denied_message, is_allowed
 from skills.skill_base import SkillBase, SkillResult
 
 
 def _workspace_path(path_str: str) -> tuple[Path | None, str | None]:
-    """Resolve a path and reject paths outside the workspace."""
-    workspace = Path.cwd().resolve()
+    """Resolve a path and reject paths the owner hasn't opened to Tesseract."""
     path = Path(path_str).expanduser().resolve()
-    try:
-        path.relative_to(workspace)
-    except ValueError:
-        return None, f"Access denied: path outside workspace: {path}"
+    if not is_allowed(path):
+        return None, denied_message(path)
     return path, None
+
+
+def _search(root_path: Path, pattern: str) -> list[str]:
+    """Paths under root_path matching pattern, without the ones the owner hasn't opened to Tesseract."""
+    matches = []
+    # Find all matching files (limit to 100 to avoid huge responses)
+    for i, p in enumerate(root_path.glob(pattern)):
+        if i >= 100:
+            matches.append("... (results truncated at 100)")
+            break
+
+        # Make paths relative to root_path for cleaner output
+        try:
+            resolved_path = p.resolve()
+            validated_path, error = _workspace_path(str(resolved_path))
+            if error:
+                continue
+            assert validated_path is not None
+            rel_path = validated_path.relative_to(root_path)
+            matches.append(str(rel_path))
+        except ValueError:
+            matches.append(str(p))
+    return matches
 
 
 class FilesystemReadFileSkill(SkillBase):
@@ -190,7 +212,7 @@ class FilesystemSearchSkill(SkillBase):
 
     @property
     def description(self) -> str:
-        return "Search for files in the workspace matching a glob pattern."
+        return "Search for files matching a glob pattern."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -225,24 +247,8 @@ class FilesystemSearchSkill(SkillBase):
             if not root_path.exists() or not root_path.is_dir():
                 return SkillResult.failure(f"Search root is not a valid directory: {root_path}")
 
-            matches = []
-            # Find all matching files (limit to 100 to avoid huge responses)
-            for i, p in enumerate(root_path.glob(pattern)):
-                if i >= 100:
-                    matches.append("... (results truncated at 100)")
-                    break
-                
-                # Make paths relative to root_path for cleaner output
-                try:
-                    resolved_path = p.resolve()
-                    validated_path, error = _workspace_path(str(resolved_path))
-                    if error:
-                        continue
-                    assert validated_path is not None
-                    rel_path = validated_path.relative_to(root_path)
-                    matches.append(str(rel_path))
-                except ValueError:
-                    matches.append(str(p))
+            # A whole-drive search takes minutes, and must not freeze the sidecar meanwhile.
+            matches = await asyncio.to_thread(_search, root_path, pattern)
 
             return SkillResult.success({"root": str(root_path), "pattern": pattern, "matches": matches})
         except Exception as e:

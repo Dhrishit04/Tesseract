@@ -9,6 +9,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import server
+from llm.providers import get_provider_client
+from secret_store import get_secret
+from tests.secret_doubles import PrivateVault
 
 
 class SidecarEndpointTests(unittest.TestCase):
@@ -52,17 +55,11 @@ class SidecarEndpointTests(unittest.TestCase):
             self.assertEqual(response.headers.get("access-control-allow-origin"), origin)
 
 
-class SettingsEndpointTests(unittest.TestCase):
+class SettingsEndpointTests(PrivateVault, unittest.TestCase):
     def setUp(self):
-        self.home = tempfile.TemporaryDirectory()
+        super().setUp()
         self.settings_path = Path(self.home.name) / ".tesseract" / "settings.json"
-        self.home_patch = patch("os.path.expanduser", return_value=self.home.name)
-        self.home_patch.start()
         self.client = TestClient(server.app, base_url="http://127.0.0.1")
-
-    def tearDown(self):
-        self.home_patch.stop()
-        self.home.cleanup()
 
     def test_put_settings_saves_and_reconfigures_client(self):
         self.settings_path.parent.mkdir(parents=True)
@@ -73,16 +70,19 @@ class SettingsEndpointTests(unittest.TestCase):
         self.assertTrue(response.json()["success"])
         saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self.assertEqual(saved["automation"], {"office_root": "C:/Docs", "automation_enabled": True})
-        self.assertEqual(server.get_client().api_key, "sk-new")
+        self.assertEqual(saved["openrouter_api_key"], "")
+        self.assertEqual(get_secret("openrouter_api_key"), "sk-new")
+        self.assertEqual(get_provider_client("openrouter").api_key, "sk-new")
 
     def test_reload_picks_up_file_written_by_desktop_app(self):
         self.settings_path.parent.mkdir(parents=True)
         self.settings_path.write_text(json.dumps({"openrouter_api_key": "sk-from-tauri"}), encoding="utf-8")
 
-        with patch.object(server, "_client", server.OpenRouterClient(api_key="sk-stale")):
-            self.client.post("/settings/reload")
+        self.client.post("/settings/reload")
 
-            self.assertEqual(server.get_client().api_key, "sk-from-tauri")
+        self.assertEqual(get_provider_client("openrouter").api_key, "sk-from-tauri")
+        self.assertEqual(get_secret("openrouter_api_key"), "sk-from-tauri")
+        self.assertEqual(json.loads(self.settings_path.read_text(encoding="utf-8"))["openrouter_api_key"], "")
 
 
 if __name__ == "__main__":

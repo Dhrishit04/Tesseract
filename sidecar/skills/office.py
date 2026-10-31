@@ -96,7 +96,7 @@ class OfficeCreatePivotSkill(SkillBase):
 
     @property
     def description(self) -> str:
-        return "Create an Excel pivot table workbook from a CSV file."
+        return "Create a new workbook with a static summary table from a CSV file. For a real PivotTable in a workbook, use office.live_create_pivot."
 
     @property
     def parameters(self) -> dict[str, Any]:

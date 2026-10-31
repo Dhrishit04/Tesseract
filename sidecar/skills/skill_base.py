@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
+from automation.policy import load_automation_policy
+
 
 @dataclass
 class SkillResult:
@@ -41,6 +43,10 @@ class SkillBase(ABC):
     def approval_summary(self, arguments: dict) -> str:
         """One line telling the owner what this call would do."""
         return self.description
+
+    def needs_approval(self) -> bool:
+        """Whether this call waits for the owner."""
+        return self.kind != "read"
 
     @property
     @abstractmethod
@@ -92,6 +98,19 @@ class SkillBase(ABC):
                 "parameters": self.parameters,
             },
         }
+
+
+class ScreenshotSkill(SkillBase):
+    """Reading the screen stays local unless the owner shares screenshots, and then each one leaves the machine."""
+
+    kind = "read"
+    approval_title = "Show the screen to the model"
+
+    def approval_summary(self, arguments: dict) -> str:
+        return "Send a screenshot to your model provider. Anything visible in it leaves this computer."
+
+    def needs_approval(self) -> bool:
+        return load_automation_policy()["share_screenshots"]
 
 
 class BlockingSkill(SkillBase):

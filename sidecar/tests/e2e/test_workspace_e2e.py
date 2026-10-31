@@ -22,6 +22,8 @@ from unittest.mock import patch
 
 import uvicorn
 
+from tests.secret_doubles import MemoryKeyring
+
 REPO = Path(__file__).resolve().parents[3]
 UI_PORT, SIDECAR_PORT, MOCK_PORT = 1420, 18765, 18799
 UI = f"http://127.0.0.1:{UI_PORT}"
@@ -79,13 +81,18 @@ class WorkspaceEndToEndTests(unittest.TestCase):
         ]
         for active in cls.patches:
             active.start()
+        import keyring
+
+        cls.previous_keyring = keyring.get_keyring()
+        keyring.set_keyring(MemoryKeyring())
         cls.previous_cwd = os.getcwd()
         os.chdir(cls.workdir.name)  # the filesystem skill is sandboxed to the working directory
 
         import server
+        from llm import providers
         from tests.e2e import mock_openrouter
 
-        server._client = None
+        providers.reset_provider_clients()
         cls.servers = [_serve_uvicorn(mock_openrouter.app, MOCK_PORT), _serve_uvicorn(server.app, SIDECAR_PORT)]
 
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(cls.dist))
@@ -105,6 +112,9 @@ class WorkspaceEndToEndTests(unittest.TestCase):
         for running in cls.servers:
             running.should_exit = True
         os.chdir(cls.previous_cwd)
+        import keyring
+
+        keyring.set_keyring(cls.previous_keyring)
         for active in cls.patches:
             active.stop()
         import chat_store
@@ -341,7 +351,50 @@ class WorkspaceEndToEndTests(unittest.TestCase):
 
         saved = json.loads(Path(self.home.name, ".tesseract", "settings.json").read_text(encoding="utf-8"))
         self.assertTrue(saved["automation"]["automation_enabled"])
-        self.assertEqual(saved["openrouter_api_key"], "sk-or-e2e")
+        self.assertEqual(saved.get("openrouter_api_key", ""), "")  # moved into the vault at startup
+        import secret_store
+
+        self.assertEqual(secret_store.get_secret("openrouter_api_key"), "sk-or-e2e")
+
+    def openrouter_card(self, page):
+        return page.locator(".account-card").filter(has=page.get_by_role("heading", name="OpenRouter"))
+
+    def test_openrouter_key_card_shows_saved_key_and_replace(self):
+        page = self.page
+        page.goto(f"{UI}/#/settings/models")
+        page.get_by_text("ending in -e2e").wait_for()
+
+        page.get_by_role("button", name="Replace key").click()
+        page.get_by_label("OpenRouter API key").fill("not-a-key")
+        self.openrouter_card(page).get_by_role("button", name="Save key").click()
+
+        page.get_by_text("sk-or-", exact=False).first.wait_for()
+
+    def test_model_picker_groups_connected_models(self):
+        page = self.page
+        page.goto(f"{UI}/#/chat/new")
+        picker = page.get_by_label("Model", exact=True)
+        picker.wait_for()
+
+        self.assertEqual(picker.locator("optgroup").evaluate_all("groups => groups.map(g => g.label)"), ["OpenRouter"])
+        self.assertIn("Mock Fast", picker.locator('optgroup[label="OpenRouter"] option').all_inner_texts())
+
+    def test_zy_no_accounts_shows_connect_a_model(self):
+        page = self.page
+        page.goto(f"{UI}/#/settings/models")
+        page.get_by_role("button", name="Remove").click()
+        page.get_by_label("OpenRouter API key").wait_for()
+        # Settings already lists the accounts, so its default-model picker says so instead of linking back here.
+        page.get_by_text("Connect an account above to choose a default model.").wait_for()
+        self.assertEqual(page.get_by_role("button", name="Connect a model").count(), 0)
+
+        page.goto(f"{UI}/#/chat/new")
+        page.get_by_role("button", name="Connect a model").click()
+        page.wait_for_url("**/#/settings/models")
+
+        page.get_by_label("OpenRouter API key").fill("sk-or-e2e")
+        self.openrouter_card(page).get_by_role("button", name="Save key").click()
+        page.get_by_text("ending in -e2e").wait_for()
 
     def test_legal_pages_live_under_about(self):
         page = self.page

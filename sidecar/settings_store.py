@@ -25,15 +25,20 @@ def load_settings() -> dict:
     return settings if isinstance(settings, dict) else {}
 
 
-def write_json_atomic(path: str, data) -> None:
-    """Write JSON so an interrupted write never corrupts the file."""
+def write_bytes_atomic(path: str, data: bytes) -> None:
+    """Write bytes so an interrupted write never corrupts the file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary_path = f"{path}.tmp"
-    with open(temporary_path, "w", encoding="utf-8") as json_file:
-        json.dump(data, json_file, indent=2)
-        json_file.flush()
-        os.fsync(json_file.fileno())
+    with open(temporary_path, "wb") as target:
+        target.write(data)
+        target.flush()
+        os.fsync(target.fileno())
     os.replace(temporary_path, path)
+
+
+def write_json_atomic(path: str, data) -> None:
+    """Write JSON so an interrupted write never corrupts the file."""
+    write_bytes_atomic(path, json.dumps(data, indent=2).encode("utf-8"))
 
 
 def save_settings(settings: dict) -> None:

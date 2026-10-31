@@ -595,3 +595,14 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .segmented-option, .settings-nav a { transition: none; }
 }
+
+/* ---- Model accounts --------------------------------------------------- */
+.account-cards { display: grid; gap: var(--s-4); }
+.account-card {
+  display: grid; gap: var(--s-3); padding: var(--s-5);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+}
+.account-card h3 { font-family: var(--font-display); font-size: var(--t-l); font-weight: 650; letter-spacing: -0.01em; }
+.model-picker:not(.field) { display: flex; align-items: center; gap: var(--s-3); }
+.model-picker.field select { max-width: none; width: 100%; }

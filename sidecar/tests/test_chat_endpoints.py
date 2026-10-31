@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -12,8 +13,11 @@ from fastapi.testclient import TestClient
 
 import server
 from llm.openrouter import OpenRouterClient
+from llm.providers import get_provider_client, reset_provider_clients
+from secret_store import set_secret
 from skills.registry import SkillRegistry
 from skills.skill_base import SkillBase, SkillResult
+from tests.secret_doubles import PrivateVault
 
 
 class EchoSkill(SkillBase):
@@ -75,7 +79,7 @@ class ChatEndpointTests(unittest.TestCase):
 
         client = OpenRouterClient(api_key="test-key", transport=httpx.MockTransport(handler))
         self.patches = [
-            patch.object(server, "get_client", return_value=client),
+            patch.object(server, "client_for", return_value=(client, "m")),
             patch.object(server, "get_skill_registry", return_value=registry),
         ]
         for active_patch in self.patches:
@@ -180,7 +184,7 @@ class ToolPreviewTests(unittest.TestCase):
             httpx.Response(200, content=sse(delta(content="here"))),
         ]
         client = OpenRouterClient(api_key="k", transport=httpx.MockTransport(lambda _r: replies.pop(0)))
-        with patch.object(server, "get_client", return_value=client), \
+        with patch.object(server, "client_for", return_value=(client, "m")), \
                 patch.object(server, "get_skill_registry", return_value=registry):
             events = read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "snap"}))
 
@@ -203,7 +207,10 @@ class ToolPreviewTests(unittest.TestCase):
             return replies.pop(0)
 
         client = OpenRouterClient(api_key="k", transport=httpx.MockTransport(handler))
-        with patch.object(server, "get_client", return_value=client),                 patch.object(server, "get_skill_registry", return_value=registry):
+        off = {"automation_enabled": True, "ocr_enabled": False, "share_screenshots": False}
+        with patch.object(server, "client_for", return_value=(client, "m")), \
+                patch.object(server, "get_skill_registry", return_value=registry), \
+                patch("llm.chat_loop.load_automation_policy", return_value=off):
             read_events(TestClient(server.app, base_url="http://127.0.0.1").post("/chat/stream", json={"message": "snap"}))
 
         tool_message = sent[1]["messages"][-1]
@@ -211,12 +218,13 @@ class ToolPreviewTests(unittest.TestCase):
         self.assertEqual(json.loads(tool_message["content"])["data"]["width"], 1)
 
 
-class ClientConfigurationTests(unittest.TestCase):
+class ClientConfigurationTests(PrivateVault, unittest.TestCase):
     def test_openrouter_base_url_can_be_overridden(self):
-        with patch.dict("os.environ", {"OPENROUTER_BASE_URL": "http://127.0.0.1:9999/v1"}), \
-                patch.object(server, "_client", None), \
-                patch.object(server, "load_settings", return_value={"openrouter_api_key": "k"}):
-            self.assertEqual(server.get_client().base_url, "http://127.0.0.1:9999/v1")
+        set_secret("openrouter_api_key", "sk-or-k")
+        reset_provider_clients()
+        with patch.dict("os.environ", {"OPENROUTER_BASE_URL": "http://127.0.0.1:9999/v1"}):
+            self.assertEqual(get_provider_client("openrouter").base_url, "http://127.0.0.1:9999/v1")
+        reset_provider_clients()
 
 
 class ReviewFixTests(unittest.TestCase):
@@ -234,7 +242,7 @@ class ReviewFixTests(unittest.TestCase):
 
         client = OpenRouterClient(api_key="k", transport=httpx.MockTransport(handler))
         self.patches = [
-            patch.object(server, "get_client", return_value=client),
+            patch.object(server, "client_for", return_value=(client, "m")),
             patch.object(server, "get_skill_registry", return_value=registry),
         ]
         for active in self.patches:
@@ -272,6 +280,17 @@ class ReviewFixTests(unittest.TestCase):
         for expected in ("Dhrishit", "boss", "Final-year student"):
             self.assertIn(expected, system["content"])
 
+    def test_system_message_gives_the_real_folders(self):
+        with patch("server.known_folders", return_value={"Downloads": Path("E:/Downloads")}):
+            system = server._system_message()[0]["content"]
+        self.assertIn(f"Downloads: {Path('E:/Downloads')}", system)
+        self.assertIn(str(Path.home()), system)
+        self.assertIn("never guess", system)
+
+    def test_system_message_states_the_chosen_access(self):
+        with patch("file_access.load_settings", return_value={"file_access": "full"}):
+            self.assertIn("the entire device", server._system_message()[0]["content"])
+
     def test_no_profile_means_only_the_time_in_the_system_message(self):
         self.responses.append(httpx.Response(200, content=sse(delta(content="hi"))))
 
@@ -283,7 +302,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertNotIn("called", system)
 
 
-class StartupTests(unittest.TestCase):
+class StartupTests(PrivateVault, unittest.TestCase):
     def test_slow_google_refresh_does_not_delay_startup(self):
         import time as clock
 
@@ -291,10 +310,14 @@ class StartupTests(unittest.TestCase):
             def load_settings(self, _settings):
                 pass
 
+            def migrate_legacy_tokens(self):
+                pass
+
             def load_credentials(self):
                 clock.sleep(3)
 
-        with patch.object(server, "get_oauth_manager", return_value=SlowOAuth()):
+        with patch.object(server, "get_oauth_manager", return_value=SlowOAuth()), \
+                patch.object(server, "migrate_plaintext_secrets"):
             started = clock.monotonic()
             with TestClient(server.app, base_url="http://127.0.0.1") as client:
                 elapsed = clock.monotonic() - started

@@ -39,7 +39,7 @@ class ChatPersistenceTests(unittest.TestCase):
         client = OpenRouterClient(api_key="k", transport=httpx.MockTransport(handler))
         self.patches = [
             patch("os.path.expanduser", return_value=self.home.name),
-            patch.object(server, "get_client", return_value=client),
+            patch.object(server, "client_for", return_value=(client, "m")),
             patch.object(server, "get_skill_registry", return_value=registry),
         ]
         for active in self.patches:

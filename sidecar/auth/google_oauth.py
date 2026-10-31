@@ -1,12 +1,11 @@
 """Google OAuth 2.0 authentication manager for Tesseract.
 
-Handles the OAuth flow (with PKCE and state checking), token storage encrypted
-with AES-256-GCM, refresh, and revocation.
+Handles the OAuth flow (with PKCE and state checking), refresh, and revocation.
+Tokens and the client secret live in the secret vault.
 """
 
 import json
 import logging
-import os
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +20,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+
+from secret_store import SecretStoreError, delete_secret, get_secret, set_secret
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ REVOKE_URI = "https://oauth2.googleapis.com/revoke"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 
-# Token storage path
+# Where earlier versions kept encrypted tokens (read once by migrate_legacy_tokens)
 TOKENS_DIR = Path.home() / ".tesseract" / "tokens"
 TOKEN_FILENAME = "google_tokens.enc"
 KEY_FILENAME = "encryption_key"
@@ -80,40 +81,38 @@ class GoogleOAuthManager:
     def _key_file(self) -> Path:
         return self._tokens_dir / KEY_FILENAME
 
-    # --- Encryption -------------------------------------------------------
-
-    def _read_or_create_key(self) -> bytes:
-        """Return the 256-bit key, replacing a legacy Fernet key if present."""
-        self._tokens_dir.mkdir(parents=True, exist_ok=True)
-        if self._key_file.exists():
-            key = self._key_file.read_bytes()
-            if len(key) == AES_KEY_BYTES:
-                return key
-        key = AESGCM.generate_key(bit_length=AES_KEY_BYTES * 8)
-        self._key_file.write_bytes(key)
+    def migrate_legacy_tokens(self) -> None:
+        """Move tokens from the old encrypted files into the vault, then delete the files."""
+        if not self._token_file.exists() or not self._key_file.exists():
+            return
         try:
-            os.chmod(self._key_file, 0o600)
+            key = self._key_file.read_bytes()
+            blob = self._token_file.read_bytes()
+            if len(key) == AES_KEY_BYTES:
+                plaintext = AESGCM(key).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], None)
+            else:  # the oldest versions used Fernet
+                plaintext = Fernet(key).decrypt(blob)
+            token_data = json.loads(plaintext.decode())
+            set_secret("google_tokens", token_data)
+        except (InvalidTag, InvalidToken, ValueError, OSError, SecretStoreError):
+            # Leave the files so a later start can retry; a damaged file must never stop the sidecar.
+            logger.exception("Could not move stored Google tokens into the vault")
+            return
+        try:
+            self._token_file.unlink(missing_ok=True)
+            self._key_file.unlink(missing_ok=True)
         except OSError:
-            logger.debug("Could not restrict key file permissions on this platform")
-        return key
-
-    def _encrypt(self, plaintext: bytes) -> bytes:
-        nonce = secrets.token_bytes(NONCE_BYTES)
-        return nonce + AESGCM(self._read_or_create_key()).encrypt(nonce, plaintext, None)
-
-    def _decrypt(self, blob: bytes) -> bytes:
-        key = self._key_file.read_bytes()
-        if len(key) == AES_KEY_BYTES:
-            return AESGCM(key).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], None)
-        # Tokens written by earlier versions used Fernet; re-saved as AES-256 on next save.
-        return Fernet(key).decrypt(blob)
+            # The tokens are already in the vault; a locked file must not stop the sidecar starting.
+            logger.exception("Could not delete the old Google token files")
 
     # --- Configuration ----------------------------------------------------
 
-    def configure(self, client_id: str, client_secret: str) -> None:
-        """Configure OAuth client credentials."""
+    def configure(self, client_id: str, client_secret: str = "") -> None:
+        """Configure OAuth client credentials; an empty secret keeps the one in the vault."""
+        if client_secret:
+            set_secret("google_client_secret", client_secret)
         self._client_id = client_id
-        self._client_secret = client_secret
+        self._client_secret = client_secret or get_secret("google_client_secret")
 
     def is_configured(self) -> bool:
         """Check if OAuth client is configured."""
@@ -123,9 +122,9 @@ class GoogleOAuthManager:
         """Load OAuth client settings from the full settings dict."""
         google_settings = settings.get("google", {})
         client_id = google_settings.get("client_id", "")
-        client_secret = google_settings.get("client_secret", "")
+        client_secret = get_secret("google_client_secret")
         if client_id and client_secret:
-            self.configure(client_id, client_secret)
+            self._client_id, self._client_secret = client_id, client_secret
         else:
             self._client_id = self._client_secret = None
 
@@ -191,7 +190,7 @@ class GoogleOAuthManager:
     # --- Token storage ----------------------------------------------------
 
     def _store_credentials(self) -> None:
-        """Save credentials to the encrypted token file."""
+        """Save credentials to the vault."""
         if not self._credentials:
             return
         token_data = {
@@ -203,21 +202,15 @@ class GoogleOAuthManager:
             "scopes": list(self._credentials.scopes or []),
             "expiry": self._credentials.expiry.isoformat() if self._credentials.expiry else None,
         }
-        encrypted = self._encrypt(json.dumps(token_data).encode())
-        # Write then rename so a crash mid-save never leaves a half-written token file.
-        temporary = self._token_file.with_name(f"{TOKEN_FILENAME}.tmp")
-        temporary.write_bytes(encrypted)
-        os.replace(temporary, self._token_file)
+        try:
+            set_secret("google_tokens", token_data)
+        except SecretStoreError:
+            logger.exception("Could not save Google tokens; they will be lost when Tesseract closes")
 
     def load_credentials(self) -> bool:
-        """Load credentials from the encrypted token file."""
-        if not self._token_file.exists() or not self._key_file.exists():
-            return False
-        try:
-            token_data = json.loads(self._decrypt(self._token_file.read_bytes()).decode())
-        except (InvalidTag, InvalidToken, ValueError, KeyError, OSError):
-            # A damaged token file must never stop the sidecar from starting; the user can reconnect.
-            logger.exception("Failed to read stored Google tokens")
+        """Load credentials from the vault."""
+        token_data = get_secret("google_tokens")
+        if not isinstance(token_data, dict):
             return False
 
         credentials = Credentials(
@@ -297,9 +290,8 @@ class GoogleOAuthManager:
         if token:
             await _revoke_token(token)
         try:
-            self._token_file.unlink(missing_ok=True)
-            self._key_file.unlink(missing_ok=True)
-        except OSError as exc:
+            delete_secret("google_tokens")
+        except SecretStoreError as exc:
             logger.exception("Error removing stored Google tokens")
             return OAuthStatus(connected=False, error=str(exc))
         return OAuthStatus(connected=False, error="Disconnected")

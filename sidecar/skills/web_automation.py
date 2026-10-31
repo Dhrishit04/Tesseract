@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from skills.skill_base import SkillBase, SkillResult
+from skills.skill_base import ScreenshotSkill, SkillBase, SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -213,10 +213,8 @@ class WebAutomationExtractSkill(SkillBase):
             return SkillResult.failure(f"Error extracting: {e}")
 
 
-class WebAutomationScreenshotSkill(SkillBase):
+class WebAutomationScreenshotSkill(ScreenshotSkill):
     """Skill to take a screenshot of the current page."""
-
-    kind = "read"
 
     @property
     def name(self) -> str:
@@ -224,7 +222,8 @@ class WebAutomationScreenshotSkill(SkillBase):
 
     @property
     def description(self) -> str:
-        return "Take a screenshot of the current page (viewport or full page). Returns base64 encoded image."
+        return ("Take a screenshot of the current page (viewport or full page). "
+                "You see the image only when the owner has turned on screenshot sharing in Settings > Automation.")
 
     @property
     def parameters(self) -> dict[str, Any]:

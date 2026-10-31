@@ -1,15 +1,14 @@
 """Test doubles shared by the approval tests: a change skill, a mocked model and a private HOME."""
 
 import json
-import tempfile
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 
 from llm.openrouter import OpenRouterClient
 from skills.registry import SkillRegistry
 from skills.skill_base import SkillBase, SkillResult
+from tests.secret_doubles import PrivateHome  # noqa: F401  (re-exported for the other tests)
 from tests.test_chat_endpoints import EchoSkill, delta, sse
 
 
@@ -64,16 +63,3 @@ class FakeModel:
     def tool_results(self, request_index: int) -> list[dict]:
         """The tool messages the model was sent in a request, decoded."""
         return [json.loads(m["content"]) for m in self.requests[request_index]["messages"] if m["role"] == "tool"]
-
-
-class PrivateHome:
-    """Mixin: point ~ at a temporary folder so the trust list and chats never touch the real ones."""
-
-    def setUp(self):
-        self.home = tempfile.TemporaryDirectory()
-        self.home_patch = patch("os.path.expanduser", return_value=self.home.name)
-        self.home_patch.start()
-
-    def tearDown(self):
-        self.home_patch.stop()
-        self.home.cleanup()

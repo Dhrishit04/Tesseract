@@ -88,7 +88,7 @@ const TERMS: LegalDocument = {
       body: (
         <p>
           Tesseract is a desktop assistant that sends your requests to an AI model you choose through OpenRouter
-          and can act on your computer: reading and writing files in its working folder, opening apps, using a
+          and can act on your computer: reading and writing files as far as you allow in Settings, opening apps, using a
           browser and desktop apps, editing Office documents, and using your Gmail and Google Calendar once
           you connect them.
         </p>

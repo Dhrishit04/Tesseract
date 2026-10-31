@@ -26,7 +26,11 @@ export async function sidecarJson<T>(path: string, init?: RequestInit): Promise<
     throw new SidecarError("The assistant service is not running.");
   }
   if (!response.ok) {
-    throw new SidecarError(`The assistant service returned ${response.status}.`, response.status);
+    const detail = await response.json().then((body) => body?.detail, () => undefined);
+    throw new SidecarError(
+      typeof detail === "string" ? detail : `The assistant service returned ${response.status}.`,
+      response.status,
+    );
   }
   return (await response.json()) as T;
 }

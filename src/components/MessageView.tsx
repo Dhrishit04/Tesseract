@@ -76,7 +76,7 @@ function MessageViewInner({ message, isStreaming, onOpenSettings, onAnswer }: Re
           <p>{message.error.message}</p>
           {message.error.code === "no_api_key" && (
             <button type="button" className="text-button" onClick={onOpenSettings}>
-              Add API key
+              Connect an account
             </button>
           )}
         </div>

@@ -130,6 +130,34 @@ class StreamApprovalTests(PrivateHome, unittest.TestCase):
         self.assertEqual(WriteSkill.calls, [])
 
 
+class ReplayClient:
+    """A provider that hands back private state with its tool call, then answers."""
+
+    def __init__(self):
+        self.sent: list[list[dict]] = []
+
+    async def chat_stream(self, messages, model, tools=None):
+        self.sent.append(list(messages))
+        if len(self.sent) == 1:
+            yield {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "test__echo", "arguments": "{}"}}]}
+            yield {"replay": "native"}
+        else:
+            yield {"content": "done"}
+
+
+class ReplayTests(PrivateHome, unittest.TestCase):
+    def test_replay_rides_on_the_assistant_message(self):
+        client = ReplayClient()
+
+        async def run():
+            return [event async for event in stream_chat(client, make_registry(), [{"role": "user", "content": "go"}], "m")]
+
+        events = asyncio.run(run())
+        assistant = next(m for m in client.sent[1] if m["role"] == "assistant")
+        self.assertEqual(assistant["replay"], "native")
+        self.assertFalse(any("replay" in event for event in events))
+
+
 class CompleteChatTests(PrivateHome, unittest.TestCase):
     def test_complete_chat_refuses_untrusted_change_but_runs_trusted(self):
         def turn(*calls):

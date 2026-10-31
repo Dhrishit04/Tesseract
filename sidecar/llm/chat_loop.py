@@ -3,15 +3,17 @@
 import json
 import logging
 from contextlib import aclosing
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, AsyncIterator
 
+from automation.policy import load_automation_policy
+from llm.images import shrink_screenshot
 from llm.openrouter import DEFAULT_MODEL, OpenRouterClient
 from permissions import ApprovalBroker, describe_approval, load_trusted, trust
 from skills.skill_base import SkillResult
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_TURNS = 10
+MAX_TOOL_TURNS = 40  # opening an app and working in it takes dozens of small steps
 
 # What the model is told when a change tool did not run.
 DECLINED = "The owner did not allow this action, so nothing was done. Do not try it again unless they ask."
@@ -48,20 +50,33 @@ def _parse_arguments(raw: str | None) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _for_model(data: Any) -> Any:
+def _for_model(data: Any, note: str) -> Any:
     """Drop raw screenshot bytes: megabytes of base64 would overflow the model's context."""
     if isinstance(data, dict) and "image_base64" in data:
-        return {**data, "image_base64": "[screenshot shown to the user in the activity log]"}
+        return {**data, "image_base64": note}
     return data
 
 
 def _tool_message(call: dict, result: SkillResult) -> dict:
-    return {
+    image = None
+    if isinstance(result.data, dict) and result.data.get("image_base64") and load_automation_policy()["share_screenshots"]:
+        image = shrink_screenshot(result.data["image_base64"])
+    note = "[screenshot attached]" if image else "[screenshot shown to the user in the activity log]"
+    message = {
         "role": "tool",
         "tool_call_id": call.get("id", ""),
         "name": call.get("function", {}).get("name", ""),
-        "content": json.dumps({"success": result.success, "data": _for_model(result.data), "error": result.error}, default=str),
+        "content": json.dumps({"success": result.success, "data": _for_model(result.data, note), "error": result.error}, default=str),
     }
+    if image:
+        message["images"] = [image]
+    return message
+
+
+def _forget_images(conversation: list[dict]) -> None:
+    """Keep each screenshot for one model turn, or every later step would send them all again."""
+    for message in conversation:
+        message.pop("images", None)
 
 
 def _gated_skill(registry, call: dict):
@@ -69,7 +84,7 @@ def _gated_skill(registry, call: dict):
     skill = registry.get_skill(registry.resolve_skill_name(call.get("function", {}).get("name", "")))
     arguments = _parse_arguments(call.get("function", {}).get("arguments"))
     # Unknown tools and bad arguments fail in _execute_tool_call without running anything.
-    if skill is None or arguments is None or skill.kind == "read" or skill.name in load_trusted():
+    if skill is None or arguments is None or not skill.needs_approval() or skill.name in load_trusted():
         return None
     return skill, arguments
 
@@ -85,11 +100,11 @@ def _refusal(resolved: dict) -> str | None:
     return DECLINED
 
 
-async def _ask(approvals: ApprovalBroker, chat_id, model: str, skill, arguments: dict) -> AsyncGenerator[dict, None]:
+async def _ask(approvals: ApprovalBroker, chat_id, model_ref: str, skill, arguments: dict) -> AsyncGenerator[dict, None]:
     """Show an approval card and wait for the owner; the last event is approval_resolved."""
     title, summary, details = describe_approval(skill, arguments)
     request = approvals.open(chat_id=chat_id, tool=skill.name, title=title, summary=summary,
-                             details=details, irreversible=skill.irreversible, model=model)
+                             details=details, irreversible=skill.irreversible, model=model_ref)
     try:
         yield {"approval": request.public()}
         decision = await approvals.wait(request.id)
@@ -125,16 +140,42 @@ async def _execute_tool_call(registry, call: dict) -> tuple[dict, dict]:
     return message, event
 
 
-async def _stream_turn(client, conversation, model, tools, pending: list[dict]) -> AsyncGenerator[dict, None]:
-    """Stream one model turn, relaying text and collecting tool-call fragments into `pending`."""
+async def _stream_turn(client, conversation, model, tools, pending: list[dict], replay: list) -> AsyncGenerator[dict, None]:
+    """Stream one model turn, relaying text and collecting tool-call fragments into `pending`.
+
+    A provider's {"replay": X} chunk is private state to send back with the assistant message; it goes
+    into `replay` and is never relayed.
+    """
     async for chunk in client.chat_stream(conversation, model=model, tools=tools):
         if chunk.get("error"):
             yield chunk
             return
+        if "replay" in chunk:
+            replay.append(chunk["replay"])
         if chunk.get("content"):
             yield {"content": chunk["content"]}
         if chunk.get("tool_calls"):
             _merge_tool_call_deltas(pending, chunk["tool_calls"])
+
+
+async def collect_stream(chunks: AsyncIterator[dict]) -> dict:
+    """Fold a provider's streamed chunks into one chat() result, or return the first error chunk."""
+    text: list[str] = []
+    pending: list[dict] = []
+    message: dict[str, Any] = {"role": "assistant", "content": None}
+    async for chunk in chunks:
+        if chunk.get("error"):
+            return chunk
+        if chunk.get("content"):
+            text.append(chunk["content"])
+        if chunk.get("tool_calls"):
+            _merge_tool_call_deltas(pending, chunk["tool_calls"])
+        if "replay" in chunk:
+            message["replay"] = chunk["replay"]
+    message["content"] = "".join(text) or None
+    if pending:
+        message["tool_calls"] = pending
+    return {"choices": [{"message": message}]}
 
 
 async def stream_chat(
@@ -145,6 +186,7 @@ async def stream_chat(
     *,
     approvals: ApprovalBroker | None = None,
     chat_id: str | None = None,
+    model_ref: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Yield UI events: {"content"}, {"tool"}, {"approval"}, {"approval_resolved"} and {"error", "message"}.
 
@@ -156,8 +198,9 @@ async def stream_chat(
 
     for _ in range(MAX_TOOL_TURNS):
         pending: list[dict] = []
+        replay: list = []
         failed = False
-        async for event in _stream_turn(client, conversation, model, tools, pending):
+        async for event in _stream_turn(client, conversation, model, tools, pending, replay):
             failed = failed or bool(event.get("error"))
             yield event
         if failed:
@@ -167,14 +210,18 @@ async def stream_chat(
         if not calls:
             return
 
-        conversation.append({"role": "assistant", "content": None, "tool_calls": calls})
+        assistant: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": calls}
+        if replay:
+            assistant["replay"] = replay[-1]
+        _forget_images(conversation)
+        conversation.append(assistant)
         for call in calls:
             skill_name = registry.resolve_skill_name(call["function"]["name"])
             gated = _gated_skill(registry, call)
             if gated:
                 refusal = NEEDS_CHAT
                 if approvals is not None:
-                    async with aclosing(_ask(approvals, chat_id, model, *gated)) as asking:
+                    async with aclosing(_ask(approvals, chat_id, model_ref or model, *gated)) as asking:
                         async for event in asking:
                             yield event
                     refusal = _refusal(event["approval_resolved"])
@@ -214,6 +261,7 @@ async def complete_chat(
         if not calls:
             return assistant_message.get("content") or ""
 
+        _forget_images(conversation)
         conversation.append(assistant_message)
         for call in calls:
             if _gated_skill(registry, call):

@@ -22,11 +22,11 @@ export interface AutomationSettings {
   headless_default: boolean;
   ocr_enabled: boolean;
   office_use_com: boolean;
+  share_screenshots: boolean;
 }
 
 export interface GoogleAuthSettings {
   client_id: string;
-  client_secret: string;
   connected: boolean;
   email: string;
 }
@@ -40,12 +40,12 @@ export interface ProfileSettings {
 }
 
 export interface Settings {
-  openrouter_api_key: string;
   default_model: string;
   voice: VoiceSettings;
   automation: AutomationSettings;
   theme: ThemePreference;
   language: string;
+  file_access: string;
   google: GoogleAuthSettings;
   profile: ProfileSettings;
 }
@@ -53,7 +53,6 @@ export interface Settings {
 export const DEFAULT_MODEL = "anthropic/claude-3.5-sonnet";
 
 export const DEFAULT_SETTINGS: Settings = {
-  openrouter_api_key: "",
   default_model: DEFAULT_MODEL,
   voice: {
     voice_enabled: false,
@@ -73,21 +72,25 @@ export const DEFAULT_SETTINGS: Settings = {
     headless_default: true,
     ocr_enabled: false,
     office_use_com: false,
+    share_screenshots: false,
   },
   theme: "system",
   language: "en",
-  google: { client_id: "", client_secret: "", connected: false, email: "" },
+  file_access: "profile",
+  google: { client_id: "", connected: false, email: "" },
   profile: { name: "", address_as: "", about: "" },
 };
 
-/** Fill gaps in a partially written settings file with defaults. */
+/** Fill gaps in a partially written settings file with defaults. Secrets now live in the vault, so stale ones are dropped. */
 function withDefaults(loaded: Partial<Settings>): Settings {
+  const { openrouter_api_key: _key, ...rest } = loaded as Partial<Settings> & { openrouter_api_key?: string };
+  const { client_secret: _secret, ...google } = (loaded.google ?? {}) as Partial<Settings["google"]> & { client_secret?: string };
   return {
     ...DEFAULT_SETTINGS,
-    ...loaded,
+    ...rest,
     voice: { ...DEFAULT_SETTINGS.voice, ...loaded.voice },
     automation: { ...DEFAULT_SETTINGS.automation, ...loaded.automation },
-    google: { ...DEFAULT_SETTINGS.google, ...loaded.google },
+    google: { ...DEFAULT_SETTINGS.google, ...google },
     profile: { ...DEFAULT_SETTINGS.profile, ...loaded.profile },
   };
 }

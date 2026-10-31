@@ -2,14 +2,6 @@
 
 export const option = (value: string, label = value) => ({ value, label });
 
-export const MODELS = [
-  option("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet"),
-  option("anthropic/claude-3-opus", "Claude 3 Opus"),
-  option("openai/gpt-4o", "GPT-4o"),
-  option("openai/gpt-4-turbo", "GPT-4 Turbo"),
-  option("google/gemini-pro-1.5", "Gemini Pro 1.5"),
-  option("meta-llama/llama-3.1-70b-instruct", "Llama 3.1 70B"),
-];
 export const WAKE_WORDS = ["jarvis", "alexa", "hey google", "hey siri", "computer", "bumblebee", "picovoice", "porcupine", "terminator"]
   .map((word) => option(word, word.replace(/\b\w/g, (letter) => letter.toUpperCase())));
 export const STT_MODELS = [
@@ -32,6 +24,12 @@ export const PIPER_VOICES = [
   option("en_US-kristin-medium", "Kristin, US English, female"),
   option("en_GB-alan-low", "Alan, British English, male"),
   option("en_GB-semaine-medium", "Semaine, British English, female"),
+];
+export const FILE_ACCESS_LEVELS = [
+  { ...option("full", "Entire device"), hint: "Every file and drive your Windows or macOS account can open." },
+  { ...option("profile", "Your user folders"), hint: "Your whole user profile, plus Desktop, Documents and Downloads wherever they are stored." },
+  { ...option("personal", "Desktop, Documents and Downloads"), hint: "Only these three folders, wherever they are stored." },
+  { ...option("workspace", "Working folder only"), hint: "Only the folder Tesseract runs in." },
 ];
 export const CLOUD_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"].map((voice) =>
   option(voice, voice[0].toUpperCase() + voice.slice(1)),

@@ -82,7 +82,7 @@ export function AboutSection({ sidecar, configPath, onReset }: Readonly<AboutSec
         <CapabilityList sidecar={sidecar} />
         <ul className="facts">
           <li>Press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>P</kbd> anywhere to show or hide Tesseract. Closing the window keeps it running in the tray.</li>
-          <li>Automation is off until you allow it, and file access is limited to the assistant's working folder.</li>
+          <li>Automation is off until you allow it, and file tools reach what you chose in Permissions, never Tesseract's own data. What the assistant reads goes to your model provider.</li>
         </ul>
         <p className="button-row">
           <a className="secondary-button" href="#/settings/about/terms">Terms of Service</a>

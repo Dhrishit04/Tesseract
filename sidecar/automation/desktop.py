@@ -2,6 +2,8 @@
 
 import base64
 import logging
+import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -14,6 +16,7 @@ try:
     import pywinauto
     from pywinauto import Desktop, Application
     from pywinauto.findwindows import ElementNotFoundError
+    from pywinauto.keyboard import send_keys
     PYWINAUTO_AVAILABLE = True
 except ImportError:
     PYWINAUTO_AVAILABLE = False
@@ -21,6 +24,7 @@ except ImportError:
     Desktop = None
     Application = None
     ElementNotFoundError = Exception
+    send_keys = None
 
 # Try to import OCR
 try:
@@ -43,6 +47,51 @@ logger = logging.getLogger(__name__)
 PYWINAUTO_MISSING = "pywinauto not available"
 NO_WINDOW_SELECTED = "No window selected. Call find_window first."
 NO_CRITERIA = "At least one search criterion required"
+FOCUS_CHECKS = 5
+FOCUS_CHECK_DELAY = 0.1
+KEY_ALIASES = {"control": "ctrl", "windows": "win", "winleft": "win", "winright": "win", "escape": "esc", "return": "enter", "pageup": "pgup", "pagedown": "pgdn", "del": "delete", "plus": "+"}
+# These belong to the owner: the secure attention sequence and locking the screen.
+REFUSED_KEYS = ({"ctrl", "alt", "delete"}, {"win", "l"})
+
+
+def parse_keys(keys: str) -> list[list[str]]:
+    """Split "ctrl+s" or "alt h v" into combinations, validating all of them before any is pressed."""
+    sequence = [[KEY_ALIASES.get(key, key) for key in combo.lower().split("+")] for combo in keys.split()]
+    if not sequence:
+        raise ValueError("No keys given.")
+    for combo in sequence:
+        if any(refused <= set(combo) for refused in REFUSED_KEYS):
+            raise ValueError(f"{'+'.join(combo)} is reserved for you, so Tesseract won't press it.")
+        unknown = [key for key in combo if key not in pyautogui.KEYBOARD_KEYS]
+        if unknown:
+            raise ValueError(f"Unknown key: {unknown[0]}. Nothing was pressed.")
+    return sequence
+
+
+def owns_point(handle: int, x: int, y: int) -> bool:
+    """True when the window showing at this screen point is this one or a dialog it owns."""
+    if os.name != "nt":
+        return True
+    ctypes = __import__("ctypes")
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    root_owner = 3  # GA_ROOTOWNER
+    return user32.GetAncestor(user32.WindowFromPoint(wintypes.POINT(x, y)), root_owner) == user32.GetAncestor(handle, root_owner)
+
+
+def window_exists(handle: int) -> bool:
+    return os.name != "nt" or bool(__import__("ctypes").windll.user32.IsWindow(handle))
+
+
+def is_in_front(handle: int) -> bool:
+    """True when the foreground window is this one or a dialog it owns."""
+    if os.name != "nt":
+        return True
+    user32 = __import__("ctypes").windll.user32
+    root_owner = 3  # GA_ROOTOWNER
+    return user32.GetAncestor(user32.GetForegroundWindow(), root_owner) == user32.GetAncestor(handle, root_owner)
 
 
 @dataclass
@@ -113,7 +162,7 @@ class DesktopAutomation:
             # Build search criteria.
             criteria = {}
             if title:
-                criteria["title_re"] = title
+                criteria["title_re"] = self._title_pattern(title)
             if class_name:
                 criteria["class_name"] = class_name
             if process_name:
@@ -136,6 +185,10 @@ class DesktopAutomation:
 
             # Use the first match - get a WindowSpecification for element searching
             window = windows[0]
+            try:
+                window.set_focus()
+            except Exception:
+                logger.debug("Could not bring window to the front", exc_info=True)
             handle = window.handle
             self._window_handle = handle
 
@@ -155,12 +208,116 @@ class DesktopAutomation:
                 is_maximized=window.is_maximized(),
             )
 
-            return {"success": True, "window": info.to_dict()}
+            others = [{"handle": other.handle, "title": other.window_text()} for other in windows[1:]]
+            return {"success": True, "window": info.to_dict(), **({"other_matches": others} if others else {})}
 
         except ElementNotFoundError:
             return {"success": False, "error": f"Window not found: {criteria}"}
         except Exception as e:
             logger.exception("Error finding window")
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _title_pattern(title: str) -> str:
+        """Match anywhere in the title, ignoring case, because window titles carry document names."""
+        try:
+            re.compile(title)
+        except re.error:
+            title = re.escape(title)
+        return f"(?i).*{title}.*"
+
+    def _select_window(self, handle: int) -> None:
+        self._current_window = Desktop(backend="uia").window(handle=handle)
+        self._window_handle = handle
+
+    def _target_problem(self, handle: int = None) -> Optional[str]:
+        """Why input must not be sent now. Runs right before each action, because focus can move at any time."""
+        if handle:
+            self._select_window(handle)
+        target = self._window_handle
+        if target is None:
+            return None
+        if not window_exists(target):
+            return "That window has closed, so nothing was sent. Find it again first."
+        if is_in_front(target):
+            return None
+        # Approving the action in Tesseract moves focus, so bring the window back before giving up.
+        try:
+            self._current_window.set_focus()
+        except Exception:
+            logger.debug("Could not bring window to the front", exc_info=True)
+        for _ in range(FOCUS_CHECKS):
+            time.sleep(FOCUS_CHECK_DELAY)  # Windows hands focus over a moment after it is asked
+            if is_in_front(target):
+                return None
+        return "That window isn't in front and couldn't be brought back, so nothing was sent."
+
+    def _point_problem(self, coordinates: tuple[int, int], handle: int = None) -> Optional[str]:
+        """Why a screen point can't be used: coordinates must land on the chosen window."""
+        problem = self._target_problem(handle)
+        if problem:
+            return problem
+        if self._window_handle is None:
+            return NO_WINDOW_SELECTED
+        if not owns_point(self._window_handle, *coordinates):
+            return "Another window is covering that point, so nothing was sent."
+        return None
+
+    @staticmethod
+    def _escaped(text: str) -> str:
+        """Text as send_keys takes it. One pass, since escaping adds characters that also need escaping."""
+        return re.sub(r"[%+^~(){}]", r"{\g<0>}", text)
+
+    def press_keys(self, keys: str, handle: int = None) -> dict[str, Any]:
+        """Press a key combination or a sequence of them in the chosen window."""
+        if not PYAUTOGUI_AVAILABLE:
+            return {"success": False, "error": "pyautogui not available"}
+        try:
+            sequence = parse_keys(keys)
+            if handle is None and self._window_handle is None:
+                return {"success": False, "error": NO_WINDOW_SELECTED}
+            for index, combo in enumerate(sequence):
+                problem = self._target_problem(handle if index == 0 else None)
+                if problem:
+                    return {"success": False, "error": problem, "pressed": index}
+                pyautogui.hotkey(*combo)
+            return {"success": True, "keys": keys}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.exception("Error pressing keys")
+            return {"success": False, "error": str(e)}
+
+    def scroll(self, amount: int, name: str = None, handle: int = None) -> dict[str, Any]:
+        """Scroll over an element, or the middle of the window. Positive scrolls up."""
+        if not PYAUTOGUI_AVAILABLE:
+            return {"success": False, "error": "pyautogui not available"}
+        try:
+            problem = self._target_problem(handle)
+            if problem:
+                return {"success": False, "error": problem}
+            if self._current_window is None:
+                return {"success": False, "error": NO_WINDOW_SELECTED}
+            element = self._find_element(self._element_criteria(name)) if name else self._current_window
+            if element is None:
+                return {"success": False, "error": f"Element not found: {name}"}
+            rect = element.rectangle()
+            pyautogui.scroll(amount, (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+            return {"success": True, "amount": amount}
+        except Exception as e:
+            logger.exception("Error scrolling")
+            return {"success": False, "error": str(e)}
+
+    def wait_check(self, name: str = None, title: str = None) -> dict[str, Any]:
+        """One look for an element or a window title; the skill does the waiting."""
+        try:
+            if title and not Desktop(backend="uia").windows(title_re=self._title_pattern(title)):
+                return {"success": True, "found": False}
+            if name and self._find_element(self._element_criteria(name)) is None:
+                return {"success": True, "found": False}
+            return {"success": True, "found": True}
+        except Exception as e:
+            logger.exception("Error checking the window")
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -241,7 +398,7 @@ class DesktopAutomation:
         root = self._build_element_tree(self._current_window, 0, max_depth, include_children)
         if not root:
             return {"success": False, "error": "Failed to build element tree"}
-        return {"success": True, "elements": root.to_dict()}
+        return {"success": True, "window_handle": self._window_handle, "elements": root.to_dict()}
 
     @staticmethod
     def _element_criteria(name: str = None, control_type: str = None, automation_id: str = None) -> dict[str, str]:
@@ -316,12 +473,16 @@ class DesktopAutomation:
         return None
 
     def click_element(self, name: str = None, control_type: str = None, automation_id: str = None,
-                      coordinates: tuple[int, int] = None) -> dict[str, Any]:
+                      coordinates: tuple[int, int] = None, handle: int = None) -> dict[str, Any]:
         """Click by coordinates, then accessibility lookup, then OCR text location, then guidance."""
         if not PYWINAUTO_AVAILABLE and not PYAUTOGUI_AVAILABLE:
             return {"success": False, "error": "No automation backend available (need pywinauto or pyautogui)"}
 
         try:
+            problem = self._point_problem(coordinates, handle) if coordinates else self._target_problem(handle)
+            if problem:
+                return {"success": False, "error": problem}
+
             if coordinates and PYAUTOGUI_AVAILABLE:
                 x, y = coordinates
                 pyautogui.click(x, y)
@@ -352,19 +513,29 @@ class DesktopAutomation:
             return {"success": False, "error": str(e)}
 
     def type_text(self, text: str, name: str = None, control_type: str = None,
-                  automation_id: str = None, coordinates: tuple[int, int] = None) -> dict[str, Any]:
+                  automation_id: str = None, coordinates: tuple[int, int] = None, handle: int = None) -> dict[str, Any]:
         """Type text into a UI element."""
         if not PYWINAUTO_AVAILABLE and not PYAUTOGUI_AVAILABLE:
             return {"success": False, "error": "No automation backend available"}
 
         try:
+            problem = self._point_problem(coordinates, handle) if coordinates else self._target_problem(handle)
+            if problem:
+                return {"success": False, "error": problem}
+
             # If coordinates provided, use PyAutoGUI
             if coordinates and PYAUTOGUI_AVAILABLE:
                 x, y = coordinates
                 pyautogui.click(x, y)
                 time.sleep(0.1)
-                pyautogui.write(text)
-                return {"success": True, "method": "pyautogui", "text": text}
+                # The click may have moved focus, and the text may be private.
+                problem = self._target_problem()
+                if problem:
+                    return {"success": False, "error": problem}
+                if send_keys is None:
+                    return {"success": False, "error": PYWINAUTO_MISSING}
+                send_keys(self._escaped(text), with_spaces=True, with_tabs=True, with_newlines=True)
+                return {"success": True, "method": "pywinauto", "text": text}
 
             if not self._current_window:
                 return {"success": False, "error": NO_WINDOW_SELECTED}
@@ -382,10 +553,7 @@ class DesktopAutomation:
             if callable(set_edit_text):
                 set_edit_text(text)
             else:
-                escaped_text = text
-                for token in ("%", "+", "^", "~", "(", ")", "{", "}"):
-                    escaped_text = escaped_text.replace(token, "{" + token + "}")
-                element.type_keys(escaped_text, with_spaces=True)
+                element.type_keys(self._escaped(text), with_spaces=True, with_tabs=True, with_newlines=True)
             return {"success": True, "method": "pywinauto", "text": text}
 
         except Exception as e:
@@ -428,6 +596,10 @@ class DesktopAutomation:
             elif region:
                 img = ImageGrab.grab(bbox=region)
             elif self._current_window and PYWINAUTO_AVAILABLE:
+                # Approving the screenshot puts Tesseract in front, and the crop would show that instead.
+                problem = self._target_problem()
+                if problem:
+                    return {"success": False, "error": problem}
                 rect = self._current_window.rectangle()
                 img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
             else:

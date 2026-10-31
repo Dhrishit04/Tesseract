@@ -14,7 +14,8 @@ READ = {
     "web_automation.wait_for", "web_automation.close",
     "desktop_automation.list_windows", "desktop_automation.get_elements", "desktop_automation.get_text",
     "desktop_automation.screenshot", "desktop_automation.ocr", "desktop_automation.close",
-    "office.read_document", "office.read_excel", "app_launcher.list_windows",
+    "office.read_document", "office.read_excel", "app_launcher.list_windows", "app_launcher.list_apps",
+    "desktop_automation.wait_for", "office.live_read_range", "office.live_read",
 }
 IRREVERSIBLE = {"gmail.send_email", "calendar.delete_event"}
 AUTOMATION_PREFIXES = ("web_automation__", "desktop_automation__", "office__")

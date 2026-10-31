@@ -22,7 +22,7 @@ class ApprovalEndpointTests(PrivateHome, unittest.TestCase):
         reset_broker()
         self.model = FakeModel()
         self.patches = [
-            patch.object(server, "get_client", return_value=self.model.client),
+            patch.object(server, "client_for", return_value=(self.model.client, "m")),
             patch.object(server, "get_skill_registry", return_value=make_registry()),
         ]
         for active in self.patches:
@@ -188,6 +188,17 @@ class ApprovalEndpointTests(PrivateHome, unittest.TestCase):
         self.assertEqual(messages[3]["tools"], [{"name": "test.write", "status": "declined", "error": None}])
         sent = self.model.tool_results(2)[0]["error"]
         self.assertIn("check the other folder first", sent)
+
+    def test_reply_is_classified_through_the_turns_own_provider(self):
+        self.queue_reply_turn("allow")
+
+        async def scenario(http):
+            chat_id = (await http.post("/chats", json={"model": "anthropic:c"})).json()["id"]
+            await self.ask(http, chat_id, lambda card: http.post(f"/chat/approvals/{card.id}/reply", json={"text": "yes"}))
+
+        self.run_http(scenario)
+
+        self.assertEqual(server.client_for.call_args_list[-1].args, ("anthropic:c",))
 
     def test_reply_to_unknown_approval_is_404(self):
         async def scenario(http):

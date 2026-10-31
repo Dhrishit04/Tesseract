@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from file_access import denied_message, is_allowed
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,7 +20,7 @@ class OfficeAutomation:
 
     def __init__(self, use_com: bool = False, allowed_root: str | Path | None = None):
         self.use_com = use_com
-        self.allowed_root = Path(allowed_root or Path.cwd()).expanduser().resolve()
+        self.allowed_root = Path(allowed_root).expanduser().resolve() if allowed_root else None
 
     def read_doc(self, path: str) -> dict[str, Any]:
         document_path = self._existing_file(path, {".docx", ".doc"})
@@ -235,19 +237,16 @@ class OfficeAutomation:
         return resolved
 
     def _ensure_allowed(self, path: Path) -> None:
-        try:
-            path.relative_to(self.allowed_root)
-        except ValueError as exc:
-            raise OfficeAutomationError(
-                f"Access denied: Office path must be inside {self.allowed_root}"
-            ) from exc
+        inside_root = self.allowed_root is None or path.is_relative_to(self.allowed_root)
+        if not (inside_root and is_allowed(path)):
+            raise OfficeAutomationError(denied_message(path))
 
     def _read_doc_com(self, path: Path) -> dict[str, Any] | None:
         try:
             import win32com.client
         except ImportError:
             return None
-        word = win32com.client.Dispatch("Word.Application")
+        word = win32com.client.DispatchEx("Word.Application")  # its own Word: this path ends with Quit
         document = None
         try:
             self._configure_word(word)
@@ -271,7 +270,7 @@ class OfficeAutomation:
             import win32com.client
         except ImportError:
             return None
-        word = win32com.client.Dispatch("Word.Application")
+        word = win32com.client.DispatchEx("Word.Application")  # its own Word: this path ends with Quit
         document = None
         try:
             self._configure_word(word)
@@ -323,7 +322,7 @@ def get_office_automation(
     use_com: bool = False, allowed_root: str | Path | None = None
 ) -> OfficeAutomation:
     global _office_automation
-    resolved_root = Path(allowed_root or Path.cwd()).expanduser().resolve()
+    resolved_root = Path(allowed_root).expanduser().resolve() if allowed_root else None
     if (
         _office_automation is None
         or _office_automation.use_com != use_com

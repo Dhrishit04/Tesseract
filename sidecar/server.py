@@ -4,9 +4,9 @@ import asyncio
 import html
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import AsyncGenerator, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,11 +16,18 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from chat_store import derive_title, get_chat_store
+from auth.chatgpt import CALLBACK_PATH, get_chatgpt_account
 from automation.orchestrator import get_automation_orchestrator
 from llm.approval_reply import classify_reply
 from llm.chat_loop import ChatLoopError, complete_chat, stream_chat
-from llm.openrouter import DEFAULT_MODEL, OPENROUTER_BASE, OpenRouterClient
+from llm.openrouter import DEFAULT_MODEL, OpenRouterClient
+from llm.providers import (
+    KEY_PROVIDERS, PROVIDER_NAMES, connected_providers, get_provider_client, model_ref, parse_model,
+    reset_provider_clients,
+)
 from permissions import Decision, get_broker, load_trusted, revoke
+from file_access import LEVELS, access_level, known_folders
+from secret_store import SecretStoreError, delete_secret, get_secret, migrate_plaintext_secrets, set_secret
 from settings_store import load_settings, save_settings, update_section
 from skills.registry import get_registry
 from voice import get_pipeline, get_stt_skill, get_tts_skill, get_wake_word_skill
@@ -28,8 +35,19 @@ from voice.wake_word import VOICE_DEPS_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
+
+class _HideQueryStrings(logging.Filter):
+    """Uvicorn's access log prints each full request path, and sign-in callbacks carry codes in theirs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) == 5 and isinstance(record.args[2], str):
+            record.args = (*record.args[:2], record.args[2].split("?")[0], *record.args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_HideQueryStrings())
+
 VERSION = "0.1.0"
-NO_API_KEY_MESSAGE = "Add your OpenRouter API key in Settings to start chatting."
 SIGN_IN_FAILED = "Google sign-in failed"
 GOOGLE_NOT_INSTALLED = 'Google support is not installed. Run: pip install -e ".[google]"'
 # shortcut: only the latest messages of a saved chat go to the model, so long chats stay under its
@@ -46,20 +64,17 @@ ALLOWED_ORIGINS = [
 ]
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
-_client: Optional[OpenRouterClient] = None
 _registry = None
 
 
-def _new_client(api_key: str) -> OpenRouterClient:
-    # OPENROUTER_BASE_URL points the sidecar at a proxy or a local mock (used by the E2E test).
-    return OpenRouterClient(api_key=api_key, base_url=os.environ.get("OPENROUTER_BASE_URL", OPENROUTER_BASE))
+def client_for(model: str):
+    """The client serving a model reference, and the provider's own id for that model."""
+    provider, model_id = parse_model(model)
+    return get_provider_client(provider), model_id
 
 
-def get_client() -> OpenRouterClient:
-    global _client
-    if _client is None:
-        _client = _new_client(load_settings().get("openrouter_api_key", ""))
-    return _client
+def _no_connection_message(model: str) -> str:
+    return f"Connect {PROVIDER_NAMES[parse_model(model)[0]]} in Settings → Models & accounts to use this model."
 
 
 def get_skill_registry():
@@ -96,17 +111,18 @@ def _voice_skills(settings: Optional[dict] = None):
     stt_skill.load_settings(settings)
     tts_skill = get_tts_skill()
     tts_skill.load_settings(settings)
-    tts_skill.set_openrouter_client(get_client())
+    tts_skill.set_openrouter_client(get_provider_client("openrouter") or OpenRouterClient(""))
     return wake_word_skill, stt_skill, tts_skill
 
 
 async def _voice_llm_handler(text: str) -> str:
     """Send a spoken request to the LLM (with tools) and return the full response."""
-    client = get_client()
-    if not client.api_key:
-        return NO_API_KEY_MESSAGE
+    model = load_settings().get("default_model") or DEFAULT_MODEL
+    client, model_id = client_for(model)
+    if client is None:
+        return _no_connection_message(model)
     try:
-        return await complete_chat(client, get_skill_registry(), [*_system_message(), {"role": "user", "content": text}])
+        return await complete_chat(client, get_skill_registry(), [*_system_message(), {"role": "user", "content": text}], model_id)
     except ChatLoopError as exc:
         return f"Error: {exc}"
 
@@ -124,12 +140,14 @@ async def _init_voice(settings: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    migrate_plaintext_secrets()
     settings = load_settings()
     get_skill_registry()
     oauth = get_oauth_manager()
     background = []
     if oauth:
         oauth.load_settings(settings)
+        oauth.migrate_legacy_tokens()
         # Loading may refresh an expired token over the network; never hold up startup for it.
         background.append(asyncio.create_task(asyncio.to_thread(oauth.load_credentials)))
     await _init_voice(settings)
@@ -197,6 +215,12 @@ def _system_message() -> list[dict]:
         facts.append(f"They like to be addressed as \"{profile['address_as']}\".")
     if profile.get("about"):
         facts.append(f"What they have told you about themselves: {profile['about']}")
+    # Without real paths the model guesses them from the owner's name, and misses folders on other drives.
+    folders = "; ".join(f"{name}: {path}" for name, path in known_folders().items())
+    facts.append(f"Their home folder is {Path.home()} ({folders}). Relative paths start from {Path.cwd()}. "
+                 "Use these exact paths and never guess a path from their name. "
+                 f"Your file tools can reach {LEVELS[access_level()]}, but never ~/.tesseract. "
+                 "If a location is refused, tell them it can be changed in Settings > Permissions.")
     return [{"role": "system", "content": " ".join(facts)}]
 
 
@@ -253,32 +277,33 @@ async def chat_stream(request: MessageRequest):
     Events: {"content"}, {"tool": {"name", "status"}}, {"approval"}, {"approval_resolved"},
     {"error", "message"}, then [DONE].
     """
-    client = get_client()
     registry = get_skill_registry()
     chat = get_chat_store().get_chat(request.chat_id) if request.chat_id else None
 
     async def generate() -> AsyncGenerator[str, None]:
         if request.chat_id and chat is None:
             yield _sse({"error": True, "code": "chat_not_found", "message": "This chat no longer exists."})
-        elif not client.api_key:
-            yield _sse({"error": True, "code": "no_api_key", "message": NO_API_KEY_MESSAGE})
         else:
-            async for event in _stream_turn(client, registry, request, chat):
+            async for event in _stream_turn(registry, request, chat):
                 yield event
         yield _sse("[DONE]")
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-async def _stream_turn(client, registry, request: MessageRequest, chat: Optional[dict]) -> AsyncGenerator[str, None]:
+async def _stream_turn(registry, request: MessageRequest, chat: Optional[dict]) -> AsyncGenerator[str, None]:
     model = request.model
+    if chat is not None and chat["model"] and request.model == DEFAULT_MODEL:
+        model = chat["model"]
+    client, model_id = client_for(model)
+    if client is None:
+        yield _sse({"error": True, "code": "no_api_key", "message": _no_connection_message(model)})
+        return
     conversation = _conversation(request)
     if chat is not None:
         store = get_chat_store()
         history = store.history(chat["id"])[-HISTORY_LIMIT:]
         conversation = [*_system_message(), *history, {"role": "user", "content": request.message}]
-        if chat["model"] and request.model == DEFAULT_MODEL:
-            model = chat["model"]
         store.add_message(chat["id"], "user", request.message)
         if not chat["title"]:
             store.update_chat(chat["id"], title=derive_title(request.message))
@@ -286,7 +311,7 @@ async def _stream_turn(client, registry, request: MessageRequest, chat: Optional
     recorder = _TurnRecorder()
     try:
         chat_id = chat["id"] if chat else None
-        async for event in stream_chat(client, registry, conversation, model, approvals=get_broker(), chat_id=chat_id):
+        async for event in stream_chat(client, registry, conversation, model_id, approvals=get_broker(), chat_id=chat_id, model_ref=model):
             resolved = event.get("approval_resolved")
             if chat_id and resolved and resolved["via"] == "reply":
                 recorder = _split_turn_at_reply(chat_id, recorder, resolved["reply"])
@@ -300,13 +325,103 @@ async def _stream_turn(client, registry, request: MessageRequest, chat: Optional
             _save_turn(chat["id"], recorder)
 
 
+def _account(provider: str) -> dict:
+    key = get_secret(KEY_PROVIDERS[provider][0])
+    return {"connected": bool(key), "key_hint": "…" + key[-4:] if key else None}
+
+
+@app.get("/accounts")
+def list_accounts():
+    """Which accounts are connected, with only the last four characters of any key."""
+    return {"chatgpt": get_chatgpt_account().status(), **{provider: _account(provider) for provider in KEY_PROVIDERS}}
+
+
+class SignInBody(BaseModel):
+    new_account: bool = False
+
+
+@app.post("/accounts/chatgpt/sign-in")
+async def chatgpt_sign_in(request: Request, body: Optional[SignInBody] = None):
+    """Start Continue with ChatGPT; OpenAI only accepts a 127.0.0.1 callback, whatever host the UI used."""
+    # async so start_sign_in runs on the event loop, like finish_sign_in, and never on a worker thread.
+    redirect_uri = f"http://127.0.0.1:{request.url.port}{CALLBACK_PATH}"
+    try:
+        return {"auth_url": get_chatgpt_account().start_sign_in(redirect_uri, new_account=bool(body and body.new_account))}
+    except SecretStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+
+
+@app.get(CALLBACK_PATH, response_class=HTMLResponse)
+async def chatgpt_callback(request: Request):
+    """Handle OpenAI's redirect after Continue with ChatGPT; the page never repeats what the URL carried."""
+    ok, message = await get_chatgpt_account().finish_sign_in(request.query_params)
+    if not ok:
+        return _oauth_result_page("ChatGPT sign-in failed", message, 400)
+    reset_provider_clients()
+    return _oauth_result_page("ChatGPT connected", message)
+
+
+@app.post("/accounts/chatgpt/sign-out")
+async def chatgpt_sign_out():
+    try:
+        revoked = await get_chatgpt_account().sign_out()
+    except SecretStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    reset_provider_clients()
+    return {"revoked": revoked}
+
+
+class KeyBody(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+def _key_provider(provider: str) -> tuple[str, str]:
+    if provider not in KEY_PROVIDERS:
+        raise HTTPException(status_code=404, detail="Unknown account.")
+    return KEY_PROVIDERS[provider]
+
+
+@app.put("/accounts/{provider}/key")
+def save_account_key(provider: str, body: KeyBody):
+    secret_name, prefix = _key_provider(provider)
+    key = body.api_key.strip()
+    if not key.startswith(prefix):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{PROVIDER_NAMES[provider]} keys start with {prefix}. Check that you copied the whole key.",
+        )
+    try:
+        set_secret(secret_name, key)
+    except SecretStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    reset_provider_clients()
+    return _account(provider)
+
+
+@app.delete("/accounts/{provider}/key")
+def remove_account_key(provider: str):
+    secret_name, _ = _key_provider(provider)
+    try:
+        delete_secret(secret_name)
+    except SecretStoreError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    reset_provider_clients()
+    return _account(provider)
+
+
 @app.get("/models")
 async def list_models():
-    """List available OpenRouter models."""
-    client = get_client()
-    if not client.api_key:
-        return {"models": []}
-    return {"models": await client.list_models()}
+    """List the models of every connected provider; the UI groups them by provider."""
+    providers = connected_providers()
+    results = await asyncio.gather(*(get_provider_client(p).list_models() for p in providers), return_exceptions=True)
+    models, errors = [], {}
+    for provider, result in zip(providers, results):
+        if isinstance(result, BaseException):
+            logger.warning("Could not list %s models: %s", provider, type(result).__name__)
+            errors[provider] = f"Could not load {PROVIDER_NAMES[provider]} models. Check the account in Settings → Models & accounts."
+            continue
+        models += [{"id": model_ref(provider, m["id"]), "name": m.get("name") or m["id"], "provider": provider} for m in result]
+    return {"models": models, "errors": errors}
 
 
 @app.get("/settings")
@@ -317,8 +432,8 @@ def get_settings():
 
 def _apply_settings(settings: dict) -> None:
     """Point every running component at freshly saved settings."""
-    global _client
-    _client = _new_client(settings.get("openrouter_api_key", ""))
+    migrate_plaintext_secrets()
+    reset_provider_clients()
     oauth = get_oauth_manager()
     if oauth:
         oauth.load_settings(settings)
@@ -424,7 +539,10 @@ async def reply_to_approval(approval_id: str, reply: ApprovalReply):
     request = broker.get(approval_id)
     if request is None:
         raise HTTPException(status_code=404, detail=APPROVAL_ENDED)
-    verdict = await classify_reply(get_client(), request.model, request, reply.text)
+    client, model_id = client_for(request.model)
+    if client is None:
+        raise HTTPException(status_code=503, detail=_no_connection_message(request.model))
+    verdict = await classify_reply(client, model_id, request, reply.text)
     if not broker.resolve(approval_id, Decision(verdict, "reply", reply.text)):  # ended while classifying
         raise HTTPException(status_code=404, detail=APPROVAL_ENDED)
     return {"decision": verdict}
@@ -519,7 +637,7 @@ async def stop_voice_pipeline():
 
 class GoogleAuthConfigRequest(BaseModel):
     client_id: str
-    client_secret: str
+    client_secret: str = ""
 
 
 @app.get("/google/auth/url")
@@ -596,8 +714,11 @@ def google_auth_configure(request: GoogleAuthConfigRequest):
     oauth = get_oauth_manager()
     if oauth is None:
         return {"success": False, "error": GOOGLE_NOT_INSTALLED}
-    oauth.configure(request.client_id, request.client_secret)
-    update_section("google", {"client_id": request.client_id, "client_secret": request.client_secret})
+    try:
+        oauth.configure(request.client_id, request.client_secret)
+    except SecretStoreError as exc:
+        return {"success": False, "error": str(exc)}
+    update_section("google", {"client_id": request.client_id})
     return {"success": True, "message": "Google OAuth configured"}
 
 
