@@ -1,4 +1,4 @@
-# Tesseract
+<img src="assets/readme/hero.svg" alt="Tesseract: a rotating four-dimensional cube beside example requests being typed" width="100%">
 
 A desktop assistant that works on your computer. You describe a task in the workspace, the model you chose (ChatGPT plan, Claude or OpenRouter) decides which actions to take, and Tesseract runs them (files, apps, browser, desktop apps, Office documents, Gmail and Google Calendar) while showing each step.
 
@@ -7,22 +7,21 @@ A desktop assistant that works on your computer. You describe a task in the work
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Status](https://img.shields.io/badge/status-active%20development-64748B?style=flat-square)
 
+<img src="assets/readme/capabilities.svg" alt="Works with files, apps, browser, desktop apps, Excel, Word, PowerPoint, Gmail, Calendar, voice, web pages and screenshots" width="100%">
+
+<img src="assets/readme/demo.svg" alt="Illustrated chat turn: Tesseract reads two files, asks to write a file, is allowed, and replies" width="100%">
+
+<sub>Illustration of a chat turn, not a recording of the app.</sub>
+
 ![Tesseract workspace after listing a folder](assets/screenshots/workspace-activity.png)
 
 <sub>Screenshots are of the real app. The model replies in them come from the local OpenRouter mock in `sidecar/tests/e2e/mock_openrouter.py`, so they are simulated. The folder listing is a real tool run.</sub>
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Architecture
 
-```mermaid
-flowchart LR
-    UI[React UI] --> Shell[Tauri shell]
-    UI -->|HTTP + SSE :8765| API[Python sidecar]
-    Shell -->|starts and stops| API
-    API --> LLM[ChatGPT, Claude, OpenRouter]
-    API --> Skills[Skills and automation]
-    API --> Voice[Voice pipeline]
-    API --> Google[Gmail and Calendar]
-```
+<img src="assets/readme/architecture.svg" alt="The React UI talks to the Python sidecar over HTTP and SSE on port 8765. The Tauri shell starts and stops the sidecar, which connects to ChatGPT, Claude and OpenRouter, skills and automation, the voice pipeline, and Gmail and Calendar" width="100%">
 
 - `src/` is the React and TypeScript interface.
 - `src-tauri/` is the native shell: tray, global shortcut, settings file, sidecar lifecycle.
@@ -32,7 +31,11 @@ A chat turn streams server-sent events from `/chat/stream`: text (`content`), to
 
 Chats are saved in SQLite at `~/.tesseract/tesseract.db` and listed in the sidebar, where you can search, rename and delete them. Each chat remembers its own model.
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Setup
+
+<img src="assets/readme/setup.svg" alt="Setup in three steps: install, run the desktop app, connect a model" width="100%">
 
 ### Requirements
 
@@ -80,6 +83,8 @@ npm run dev   # http://localhost:1420
 
 Settings, chat and voice fall back to plain HTTP calls when Tauri is not present. Startup-at-sign-in only appears inside the desktop app.
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Models & accounts
 
 **Settings > Models & accounts** has one card per provider. The workspace model picker lists only the providers you have connected, grouped by provider, and each chat remembers its own model. With nothing connected it shows **Connect a model**.
@@ -90,7 +95,11 @@ Settings, chat and voice fall back to plain HTTP calls when Tauri is not present
 
 Saved keys show only their last four characters, with **Replace key** and **Remove**.
 
+<img src="assets/readme/vault.svg" alt="ChatGPT tokens and API keys move into the encrypted vault, whose AES key sits in the OS credential store" width="100%">
+
 Secrets (API keys, the ChatGPT tokens and the Google client secret) live in an encrypted vault, `~/.tesseract/secrets.enc`. Its AES key sits in the OS credential store (Windows Credential Manager, macOS Keychain). A key still in plain text in `settings.json` from an older version is moved into the vault on first start and blanked in the file; if it can't be moved, it stays where it was until the credential store works. Saving a key while the credential store is unavailable fails with a message instead of writing it in plain text.
+
+<img src="assets/readme/divider.svg" alt="" width="100%">
 
 ## Connecting Google (Gmail and Calendar)
 
@@ -100,7 +109,11 @@ Secrets (API keys, the ChatGPT tokens and the Google client secret) live in an e
 
 Tokens are stored in the encrypted vault (see [Models & accounts](#models--accounts)); token files from older versions are moved into it on first start. **Disconnect and revoke access** revokes the token with Google and deletes the stored tokens.
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Voice
+
+<img src="assets/readme/voice.svg" alt="A moving voice waveform above four stages: wake word, speech to text, your model and spoken reply" width="100%">
 
 Voice is optional and needs extra packages:
 
@@ -111,7 +124,11 @@ uv pip install -e ".[voice]"
 
 `whisper-cpp-python` needs a C++ build toolchain on Windows. The wake word needs a free access key from [console.picovoice.ai](https://console.picovoice.ai). Turn on **Settings > Voice**, then use **Listen for wake word** or **Dictate** in the workspace toolbar. If the packages are missing, the toolbar shows **Set up voice** and the rest of the app works normally.
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Automation
+
+<img src="assets/readme/automation.svg" alt="Tesseract automating a Chromium window, desktop apps, Excel, and Word and PowerPoint" width="100%">
 
 Automation is off by default. Turn it on in **Settings > Automation** to give the model these tools. It still asks before each change (see [Approvals](#approvals)):
 
@@ -125,9 +142,13 @@ Automation is off by default. Turn it on in **Settings > Automation** to give th
 
 Which files these tools reach depends on **Settings > Permissions** (see [Approvals](#approvals)).
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Approvals
 
 Tesseract reads freely (files, email, calendar, web pages, windows) but asks before it changes anything: writing a file, sending an email, creating or deleting an event, opening an app, clicking or typing. The chat shows a card with what it wants to do and three buttons: **Allow**, **Always allow this** and **Don't allow**. Sending an email and deleting an event are marked **Can't be undone**.
+
+<img src="assets/readme/reach.svg" alt="Four file access levels widen from Working folder only to Entire device, while ~/.tesseract stays locked at every level" width="100%">
 
 - You can also answer in your own words in the message box ("yes go ahead", "nah, wait"). Anything unclear counts as not allowed, and the model gets your words.
 - A card nobody answers within 10 minutes counts as not allowed. Stopping the reply cancels it.
@@ -135,6 +156,8 @@ Tesseract reads freely (files, email, calendar, web pages, windows) but asks bef
 - The same page lists everything you chose **Always allow this** for, with **Revoke** buttons. The list is stored in `~/.tesseract/permissions.json`.
 - Opening apps, files and links does not need automation turned on, but always asks first (unless always allowed).
 - Voice can only read for now: a spoken request that needs a change is refused, and the model asks you to approve it in the chat window. Spoken approvals come with the voice update.
+
+<img src="assets/readme/divider.svg" alt="" width="100%">
 
 ## Development
 
@@ -160,6 +183,8 @@ The E2E test needs ports 1420, 18765 and 18799 free. To work on the UI without s
 
 With the sidecar running, FastAPI serves interactive API docs at <http://127.0.0.1:8765/docs> and the schema at `/openapi.json`.
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Packaging
 
 ```powershell
@@ -169,9 +194,13 @@ npm run tauri build
 
 Installers are written to `src-tauri/target/release/bundle/`. CI (`.github/workflows/ci.yml`) runs the tests on every push and builds unsigned Windows and macOS bundles on `main`. Code signing and the Tauri updater need certificates and an update host, which are not set up yet.
 
+<img src="assets/readme/divider.svg" alt="" width="100%">
+
 ## Configuration
 
 Settings live in `~/.tesseract/settings.json` and are shared by the app and the sidecar. Secrets are not kept there (see [Models & accounts](#models--accounts)). See the in-app Privacy page for what is sent where.
+
+<img src="assets/readme/divider.svg" alt="" width="100%">
 
 ## Project map
 
@@ -186,8 +215,11 @@ Tesseract/
 │   ├── skills/          Tools the model can call (auto-discovered)
 │   ├── voice/           Wake word, STT, TTS, pipeline
 │   └── tests/           Unit, integration and E2E tests
-└── assets/screenshots/  Images used in this README
+├── assets/readme/       Animated SVGs used in this README
+└── assets/screenshots/  Screenshots used in this README
 ```
+
+<img src="assets/readme/divider.svg" alt="" width="100%">
 
 ## License
 
